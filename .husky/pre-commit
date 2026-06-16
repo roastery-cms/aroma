@@ -1,0 +1,4 @@
+mise exec -- bun test:unit
+mise exec -- bun test:coverage
+mise exec -- bun knip
+mise exec -- bun setup
