@@ -1,0 +1,42 @@
+[test]
+smol = true
+root = "src"
+serial = true
+paths = ["./src"]
+preload = [
+  "./test/set-max-listeners-to-zero.ts",
+  "./test/replace-node-env.ts",
+]
+coveragePathIgnorePatterns = [
+  # Test files
+  "**/*.test.ts",
+  "**/*.spec.ts",
+  "**/*.e2e.ts",
+
+  # Configuration files
+  "*.config.js",
+  "*.config.ts",
+
+  # Build output
+  "dist/**",
+  "build/**",
+  ".next/**",
+
+  # Generated code
+  "generated/**",
+  "**/*.generated.ts",
+
+  # Vendor/third-party
+  "vendor/**",
+  "third-party/**",
+
+  # Dev bootstrap (test harness, not production code)
+  "src/presentation/dev/**",
+
+  # Utilities that don't need testing
+  "src/utils/constants.ts",
+  "src/types/**",
+
+  "**/dist/**/*.js"
+]
+coverageIgnoreSourcemaps = true
