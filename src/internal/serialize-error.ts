@@ -1,49 +1,97 @@
+import { CoreException } from "@roastery/terroir/exceptions/core";
+import { UnknownException } from "@roastery/terroir/exceptions";
+import { ExceptionLayer } from "@roastery/terroir/exceptions/symbols";
 import type { ILogEvent } from "@/types/log-event.interface";
 
 /**
- * Plain-object shape produced from a thrown `Error`. Mirrors
- * `ILogEvent["err"]` exactly, deriving the type by indexed access so the
- * two stay in lockstep automatically.
+ * Plain-object shape produced from a thrown value. Mirrors `ILogEvent["err"]`
+ * exactly, deriving the type by indexed access so the two stay in lockstep
+ * automatically.
  *
  * @internal
  */
 type SerializedError = NonNullable<ILogEvent["err"]>;
 
 /**
- * Convert an `Error` instance into a plain serialisable object that survives
- * `JSON.stringify`. Recurses through `cause` so that nested error chains
- * (the `new Error("outer", { cause: inner })` pattern) are preserved
- * end-to-end.
+ * Normalise any thrown value to the serialised shape of a `terroir`
+ * `CoreException` and return a plain, JSON-safe object (a raw `Error`
+ * instance survives `JSON.stringify` as `{}` because its fields are
+ * non-enumerable — this is what reconstitutes them as data).
  *
- * When `cause` is itself an `Error`, it is serialised the same way; when it
- * is any other value (string, number, plain object), it is passed through
- * unchanged so callers retain whatever shape they originally attached.
+ * - A value that already derives from `CoreException` (any layer) is
+ *   serialised as-is, preserving its `name`, `source` and `[ExceptionLayer]`.
+ * - Anything else — a native `Error`, or a non-`Error` value caught in a
+ *   `catch (e: unknown)` block — is wrapped in an `UnknownException`
+ *   (`source: "$internal"`, `layer: "internal"`); the original value is kept
+ *   under `cause` so nothing is lost.
  *
- * @param err - the thrown value to serialise. Must be an `Error`; callers
- *   that hold an `unknown` should `instanceof Error` check first.
- * @returns a `{ name, message, stack, cause }` object suitable for assignment
- *   onto `ILogEvent.err`.
+ * `cause` is serialised recursively: an `Error` / `CoreException` cause becomes
+ * a nested plain object, any other value is passed through unchanged.
+ *
+ * @param value - the thrown value to serialise; accepts `unknown`.
+ * @returns a `{ name, message, stack, source, layer, cause }` object suitable
+ *   for assignment onto `ILogEvent.err`.
  *
  * @example
  * ```ts
- * const inner = new Error("disk full");
- * const outer = new Error("upload failed", { cause: inner });
- * serializeError(outer);
- * // → { name: "Error", message: "upload failed", stack: "...",
- * //     cause: { name: "Error", message: "disk full", stack: "...", cause: undefined } }
+ * serializeError(new TypeError("bad"));
+ * // → { name: "Unknown Error", message: "bad", source: "$internal",
+ * //     layer: "internal", stack: "...",
+ * //     cause: { name: "TypeError", message: "bad", stack: "..." } }
  * ```
  *
  * @see {@link ILogEvent.err} — destination of the returned shape.
  *
  * @internal
  */
-export function serializeError(err: Error): SerializedError {
-	const cause = (err as { cause?: unknown }).cause;
+export function serializeError(value: unknown): SerializedError {
+	const exc = value instanceof CoreException ? value : wrapUnknown(value);
+	return fromCoreException(exc);
+}
 
+/**
+ * Wrap a non-`CoreException` value in an `UnknownException`, keeping the
+ * original under `cause`. The wrapper's `message` mirrors the source error's
+ * message (or `String(value)` for non-`Error` values).
+ */
+function wrapUnknown(value: unknown): UnknownException {
+	const message = value instanceof Error ? value.message : String(value);
+	const wrapped = new UnknownException(message);
+	(wrapped as { cause?: unknown }).cause = value;
+	return wrapped;
+}
+
+/**
+ * Serialise a `CoreException` to the canonical top-level shape — the only
+ * variant that carries `source` and `layer`.
+ */
+function fromCoreException(exc: CoreException): SerializedError {
 	return {
-		name: err.name,
-		message: err.message,
-		stack: err.stack,
-		cause: cause instanceof Error ? serializeError(cause) : cause,
+		name: exc.name,
+		message: exc.message,
+		stack: exc.stack,
+		source: exc.source,
+		layer: exc[ExceptionLayer],
+		cause: serializeCause((exc as { cause?: unknown }).cause),
 	};
+}
+
+/**
+ * Recursively serialise a `cause`. A `CoreException` keeps its `source` /
+ * `layer`; a native `Error` is reduced to `name` / `message` / `stack`; any
+ * other value passes through unchanged.
+ */
+function serializeCause(cause: unknown): unknown {
+	if (cause instanceof CoreException) {
+		return fromCoreException(cause);
+	}
+	if (cause instanceof Error) {
+		return {
+			name: cause.name,
+			message: cause.message,
+			stack: cause.stack,
+			cause: serializeCause((cause as { cause?: unknown }).cause),
+		};
+	}
+	return cause;
 }

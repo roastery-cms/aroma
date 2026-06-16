@@ -47,7 +47,13 @@ describe("createEcsProcessor", () => {
 	test("err maps to ECS error block", () => {
 		const out = proc.process(
 			event({
-				err: { name: "TypeError", message: "boom", stack: "stack-line\n…" },
+				err: {
+					name: "TypeError",
+					message: "boom",
+					stack: "stack-line\n…",
+					source: "$internal",
+					layer: "internal",
+				},
 			}),
 		) as unknown as {
 			error: { type: string; message: string; stack_trace?: string };
@@ -106,7 +112,13 @@ describe("createEcsProcessor", () => {
 		const out = proc.process(
 			event({
 				msg: "boom",
-				err: { name: "TypeError", message: "bad", stack: "at x" },
+				err: {
+					name: "TypeError",
+					message: "bad",
+					stack: "at x",
+					source: "$internal",
+					layer: "internal",
+				},
 			}),
 		);
 

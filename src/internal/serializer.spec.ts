@@ -47,7 +47,15 @@ describe("serializeEvent", () => {
 	test("includes err when present", () => {
 		const parsed = JSON.parse(
 			serializeEvent(
-				ev({ err: { name: "Error", message: "boom", stack: "at line" } }),
+				ev({
+					err: {
+						name: "Error",
+						message: "boom",
+						stack: "at line",
+						source: "$internal",
+						layer: "internal",
+					},
+				}),
 			),
 		);
 		expect(parsed.err.name).toBe("Error");

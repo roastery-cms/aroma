@@ -5,10 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.2] - 2026-06-16
 
 ### Changed
 
+- **Logged errors are normalised to the `terroir` exception hierarchy.** A
+  thrown value that already derives from `CoreException` (any layer) is
+  serialised as-is, preserving its `name`, `source` and layer discriminator;
+  anything else — a native `Error`, or a non-`Error` value caught as
+  `unknown` — is wrapped in an `UnknownException` (`source: "$internal"`,
+  `layer: "internal"`) with the original value preserved under `cause`.
+  `ILogEvent.err` is consequently re-typed from a `CoreException` *instance*
+  to a plain, JSON-safe `{ name, message, stack?, source, layer, cause? }`
+  object (`cause` is serialised recursively). Custom own-properties on the
+  error (`err.code`, `err.statusCode`, …) are intentionally **not** carried
+  over — only the canonical fields are emitted.
 - **Buffered transports now flush on the next event-loop tick.**
   `FastStdioTransport` / `FileTransport` previously only scheduled a flush once
   the buffer crossed `bufferSize` (4 KB), so low-volume `info`/`warn` logs were
@@ -20,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`log.error()` no longer emits an empty `err: {}`.** `serializeError` had
+  been reduced to an identity stub while `ILogEvent.err` was typed as a
+  `CoreException` *instance*, so `JSON.stringify` produced `{}` — `Error`'s
+  `name`/`message`/`stack`/`cause` are non-enumerable and never made it into
+  the serialised line. Errors are again converted to a plain object carrying
+  `name`/`message`/`stack`/`source`/`layer`, with `cause` walked recursively,
+  so the full error is visible in the log output.
 - **ECS processor now actually works with the bundled transports.** Events
   reshaped by `createEcsProcessor()` were silently stripped back to
   `{level,time,bindings}` by `serializeEvent`, which only understood the
@@ -70,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
+- Updated error-serialisation specs for the wrapped-`UnknownException` shape
+  and added a case asserting a `CoreException` (e.g. `AromaException`) passes
+  through with its `source`/`layer` intact.
 - Added ECS round-trip tests through `serializeEvent` and a real transport.
 - Added a `WorkerTransport` end-to-end spec covering the structured-clone
   boundary (plain + ECS events), the `onError`/worker-crash path, and a

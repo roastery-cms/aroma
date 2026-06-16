@@ -69,7 +69,7 @@ describe("Logger — pino-style API", () => {
 		expect(sink.events[0]?.meta).toEqual({ event: "queue.empty", workerId: 3 });
 	});
 
-	test("error(err, msg): Error as first arg lands on event.err", () => {
+	test("error(err, msg): native Error is normalised to UnknownException", () => {
 		const sink = new NullTransport();
 		const logger = new Logger({ transports: [sink] });
 		const cause = new Error("root");
@@ -79,10 +79,35 @@ describe("Logger — pino-style API", () => {
 
 		const event = sink.events[0];
 		expect(event?.msg).toBe("failed");
-		expect(event?.err?.name).toBe("Error");
+		// Non-terroir errors are wrapped so event.err always derives from CoreException.
+		expect(event?.err?.name).toBe("Unknown Error");
 		expect(event?.err?.message).toBe("boom");
+		expect(event?.err?.source).toBe("$internal");
+		expect(event?.err?.layer).toBe("internal");
 		expect(event?.err?.stack).toBeDefined();
-		expect((event?.err?.cause as { message: string }).message).toBe("root");
+		// The original error and its own cause chain are preserved under `cause`.
+		const errCause = event?.err?.cause as {
+			name: string;
+			message: string;
+			cause?: { message: string };
+		};
+		expect(errCause.name).toBe("Error");
+		expect(errCause.message).toBe("boom");
+		expect(errCause.cause?.message).toBe("root");
+	});
+
+	test("error(coreException): a terroir exception passes through with source/layer", () => {
+		const sink = new NullTransport();
+		const logger = new Logger({ transports: [sink] });
+		const err = new AromaException("transport down", { source: "console" });
+
+		logger.error(err, "failed");
+
+		const event = sink.events[0];
+		expect(event?.err?.name).toBe("Aroma Exception");
+		expect(event?.err?.message).toBe("transport down");
+		expect(event?.err?.source).toBe("console");
+		expect(event?.err?.layer).toBe("infra");
 	});
 
 	test("error({ err, ...meta }, msg) extracts err from meta object", () => {

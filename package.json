@@ -1,91 +1,91 @@
 {
-	"name": "@roastery/aroma",
-	"version": "0.0.1",
-	"author": {
-		"name": "Alan Reis",
-		"email": "alanreisanjo@gmail.com",
-		"url": "https://github.com/Hoyasumii"
-	},
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/roastery-cms/aroma"
-	},
-	"main": "./dist/index.cjs",
-	"module": "./dist/index.js",
-	"devDependencies": {
-		"@commitlint/cli": "^20.4.1",
-		"@commitlint/config-conventional": "^20.4.1",
-		"husky": "^9.1.7",
-		"knip": "6.7.0"
-	},
-	"peerDependencies": {
-		"typescript": "^5",
-		"@types/bun": "latest",
-		"tsup": "^8.5.1",
-		"@opentelemetry/api": "^1"
-	},
-	"peerDependenciesMeta": {
-		"@opentelemetry/api": {
-			"optional": true
-		}
-	},
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js",
-			"require": "./dist/index.cjs"
-		},
-		"./transports/worker/file-worker": {
-			"types": "./dist/transports/worker/file-worker.d.ts",
-			"import": "./dist/transports/worker/file-worker.js",
-			"require": "./dist/transports/worker/file-worker.cjs"
-		},
-		"./*": {
-			"types": "./dist/*/index.d.ts",
-			"import": "./dist/*/index.js",
-			"require": "./dist/*/index.cjs"
-		}
-	},
-	"description": "Structured, transport-based logger for the Roastery CMS ecosystem — pino-style API, pluggable transports & processors, redaction by default, and optional OpenTelemetry correlation.",
-	"files": [
-		"dist"
-	],
-	"keywords": [
-		"logger",
-		"logging",
-		"structured-logging",
-		"json-logger",
-		"pino",
-		"transport",
-		"redaction",
-		"opentelemetry",
-		"observability",
-		"ndjson",
-		"typescript",
-		"bun"
-	],
-	"license": "MIT",
-	"scripts": {
-		"build": "biome check --fix && knip && tsup 'src/**/index.ts' 'src/transports/worker/file-worker.ts' --format cjs,esm --dts --tsconfig tsconfig.build.json --clean",
-		"test:unit": "bun test --env-file=.env.testing",
-		"test:coverage": "bun test --env-file=.env.testing --coverage",
-		"bench": "bun bench/throughput.bench.ts",
-		"bench:compare": "bun bench/throughput.bench.ts && bun bench/compare.ts",
-		"bench:leak": "bun bench/leak.ts",
-		"setup": "bun run build && bun link",
-		"prepare": "husky || true",
-		"knip": "knip"
-	},
-	"type": "module",
-	"types": "./dist/index.d.ts",
-	"typesVersions": {
-		"*": {
-			"*": [
-				"./dist/*/index.d.ts"
-			]
-		}
-	},
-	"dependencies": {
-		"@roastery/terroir": "^0.1.0"
-	}
+    "name": "@roastery/aroma",
+    "version": "0.0.2",
+    "author": {
+        "name": "Alan Reis",
+        "email": "alanreisanjo@gmail.com",
+        "url": "https://github.com/Hoyasumii"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/roastery-cms/aroma"
+    },
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "devDependencies": {
+        "@commitlint/cli": "^20.4.1",
+        "@commitlint/config-conventional": "^20.4.1",
+        "husky": "^9.1.7",
+        "knip": "6.7.0"
+    },
+    "peerDependencies": {
+        "typescript": "^5",
+        "@types/bun": "latest",
+        "tsup": "^8.5.1",
+        "@opentelemetry/api": "^1"
+    },
+    "peerDependenciesMeta": {
+        "@opentelemetry/api": {
+            "optional": true
+        }
+    },
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        },
+        "./transports/worker/file-worker": {
+            "types": "./dist/transports/worker/file-worker.d.ts",
+            "import": "./dist/transports/worker/file-worker.js",
+            "require": "./dist/transports/worker/file-worker.cjs"
+        },
+        "./*": {
+            "types": "./dist/*/index.d.ts",
+            "import": "./dist/*/index.js",
+            "require": "./dist/*/index.cjs"
+        }
+    },
+    "description": "Structured, transport-based logger for the Roastery CMS ecosystem — pino-style API, pluggable transports & processors, redaction by default, and optional OpenTelemetry correlation.",
+    "files": [
+        "dist"
+    ],
+    "keywords": [
+        "logger",
+        "logging",
+        "structured-logging",
+        "json-logger",
+        "pino",
+        "transport",
+        "redaction",
+        "opentelemetry",
+        "observability",
+        "ndjson",
+        "typescript",
+        "bun"
+    ],
+    "license": "MIT",
+    "scripts": {
+        "build": "biome check --fix && knip && tsup 'src/**/index.ts' 'src/transports/worker/file-worker.ts' --format cjs,esm --dts --tsconfig tsconfig.build.json --clean",
+        "test:unit": "bun test --env-file=.env.testing",
+        "test:coverage": "bun test --env-file=.env.testing --coverage",
+        "bench": "bun bench/throughput.bench.ts",
+        "bench:compare": "bun bench/throughput.bench.ts && bun bench/compare.ts",
+        "bench:leak": "bun bench/leak.ts",
+        "setup": "bun run build && bun link",
+        "prepare": "husky || true",
+        "knip": "knip"
+    },
+    "type": "module",
+    "types": "./dist/index.d.ts",
+    "typesVersions": {
+        "*": {
+            "*": [
+                "./dist/*/index.d.ts"
+            ]
+        }
+    },
+    "dependencies": {
+        "@roastery/terroir": "^0.1.0"
+    }
 }
