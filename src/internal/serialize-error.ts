@@ -1,5 +1,5 @@
-import { CoreException } from "@roastery/terroir/exceptions/core";
 import { UnknownException } from "@roastery/terroir/exceptions";
+import { CoreException } from "@roastery/terroir/exceptions/core";
 import { ExceptionLayer } from "@roastery/terroir/exceptions/symbols";
 import type { ILogEvent } from "@/types/log-event.interface";
 
