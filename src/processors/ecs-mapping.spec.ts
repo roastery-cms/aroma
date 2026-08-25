@@ -150,3 +150,97 @@ describe("createEcsProcessor", () => {
 		expect(parsed.level).toBeUndefined();
 	});
 });
+
+describe("createEcsProcessor — domain integration", () => {
+	function ecs(event: Partial<ILogEvent>): Record<string, unknown> {
+		const processed = createEcsProcessor().process({
+			level: "info",
+			time: 1700000000000,
+			bindings: {},
+			...event,
+		} as ILogEvent);
+
+		return processed as unknown as Record<string, unknown>;
+	}
+
+	test("maps err.code to error.code as a string", () => {
+		const out = ecs({
+			err: {
+				name: "Forbidden",
+				message: "denied",
+				source: "checkout",
+				layer: "application",
+				code: 403,
+			},
+		});
+
+		expect((out.error as Record<string, unknown>).code).toBe("403");
+	});
+
+	test("adds http.response.status_code for the application layer only", () => {
+		const application = ecs({
+			err: {
+				name: "Forbidden",
+				message: "denied",
+				source: "checkout",
+				layer: "application",
+				code: 403,
+			},
+		});
+		const infra = ecs({
+			err: {
+				name: "Aroma Exception",
+				message: "transport down",
+				source: "@roastery/aroma",
+				layer: "infra",
+			},
+		});
+
+		expect(application.http).toEqual({ response: { status_code: 403 } });
+		expect(infra.http).toBeUndefined();
+		expect((infra.error as Record<string, unknown>).code).toBeUndefined();
+	});
+
+	test("folds flattened domain-event keys into the ECS event namespace", () => {
+		const out = ecs({
+			meta: {
+				"order.name": "order.confirmed",
+				"order.aggregateId": "01J-order",
+				"order.occurredAt": "2026-08-25T13:04:11.000Z",
+			},
+		});
+
+		expect(out.event).toEqual({
+			kind: "event",
+			dataset: "order",
+			action: "order.confirmed",
+			id: "01J-order",
+			created: "2026-08-25T13:04:11.000Z",
+		});
+		// The dotted keys must not survive: Elasticsearch would expand them back
+		// into an `event` object and collide with the namespace.
+		expect("order.name" in out).toBe(false);
+		expect("order.aggregateId" in out).toBe(false);
+	});
+
+	test("leaves an event payload outside the reserved namespace", () => {
+		const out = ecs({
+			meta: {
+				"order.name": "order.confirmed",
+				"order.aggregateId": "01J-order",
+				"order.occurredAt": "2026-08-25T13:04:11.000Z",
+				"order.payload": { total: 1500 },
+			},
+		});
+
+		expect(out["order.payload"]).toEqual({ total: 1500 });
+		expect((out.event as Record<string, unknown>).payload).toBeUndefined();
+	});
+
+	test("leaves a document with no flattened event keys alone", () => {
+		const out = ecs({ meta: { userId: 42, "not.anevent": "x" } });
+
+		expect(out.event).toBeUndefined();
+		expect(out["not.anevent"]).toBe("x");
+	});
+});

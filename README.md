@@ -11,7 +11,7 @@ Structured, transport-based logger for the [Roastery CMS](https://github.com/roa
 - **Logger** — pino-style call shape (`log.info({ userId }, "msg")`), six levels (`trace` → `fatal`), `child()` context inheritance, and a **zero-allocation dropped path** (calls below the configured level are bound to a shared no-op at construction time).
 - **Transports** — pluggable sinks. Buffered non-blocking stdio, rotating files, worker-thread offloading, in-memory capture for tests, or any pino-shaped sink via the compat shim.
 - **Processors** — a synchronous pipeline applied once per event before broadcast: redaction, enrichment, filtering, sampling, and ECS remapping.
-- **Redaction by default** — common secret keys are masked out of the box; opt out with `redact: false`.
+- **Redaction by default** — common secret keys are masked out of the box, and `@roastery/beans` domain objects are serialised through their *safe* form so a `sensitive` property can't slip out one level below a harmless key; opt out of both with `redact: false`.
 - **Crash-safe** — `error`/`fatal` lines are written **synchronously**, so they survive an immediate `process.exit()`.
 
 ## Technologies
@@ -19,6 +19,7 @@ Structured, transport-based logger for the [Roastery CMS](https://github.com/roa
 | Tool | Purpose |
 |------|---------|
 | [@roastery/terroir](https://github.com/roastery-cms/terroir) | Exception hierarchy (`AromaException` → `InfraException`) |
+| [@roastery/beans](https://github.com/roastery-cms/beans) | Domain pillars (`Entity`, `ValueObject`, `Command`, domain events) made safe to log, and the shared redaction placeholder |
 | [@opentelemetry/api](https://github.com/open-telemetry/opentelemetry-js) | Optional trace/span correlation (`@roastery/aroma/otel`) |
 | [tsup](https://tsup.egoist.dev) | Bundling to ESM + CJS with `.d.ts` generation |
 | [Bun](https://bun.sh) | Runtime, test runner, and package manager |
@@ -37,7 +38,7 @@ bun add @roastery/aroma typescript
 Or install them separately:
 
 ```bash
-# Install the library (pulls in @roastery/terroir)
+# Install the library (pulls in @roastery/terroir and @roastery/beans)
 bun add @roastery/aroma
 
 # Install the peer dependency
@@ -85,7 +86,7 @@ req.error(new Error("boom"), "checkout failed");
 const log = createAroma({
   level: "info",                 // minimum severity broadcast to transports
   redact: ["customSecret"],      // ADDED to the default keys (or `false` to disable redaction)
-  processors: [/* … */],         // run after the auto-injected redact processor
+  processors: [/* … */],         // run after the auto-injected domain + redact processors
   transports: [/* … */],         // defaults to a single FastStdioTransport
   onError: (err) => telemetry.record("logger.failure", err),
 });
@@ -182,7 +183,8 @@ Processors run **synchronously, in declaration order**, once per event before an
 
 | Factory | Description |
 |---------|-------------|
-| `createRedactProcessor({ keys })` | Masks top-level fields with `"[REDACTED]"` (shallow) |
+| `createDomainProcessor()` | Replaces `@roastery/beans` domain objects with their safe form — run **first** |
+| `createRedactProcessor({ keys })` | Masks top-level fields with the configured placeholder, `"[redacted]"` by default (shallow) |
 | `createEnrichProcessor(extras)` | Merges fixed fields into every event's `bindings` |
 | `createFilterProcessor(predicate)` | Drops events failing a predicate |
 | `createSampleProcessor(rates)` | Probabilistically drops events per-level |
@@ -207,13 +209,78 @@ const log = createAroma({
 
 ### Redaction
 
-`createAroma` auto-injects a redact processor (unless `redact: false`) using `DEFAULT_REDACT_KEYS`:
+`createAroma` auto-injects two processors, in this order, unless `redact: false` turns both off — the final pipeline is `[domain, redact, ...processors]`.
+
+**1. The domain processor** converts `@roastery/beans` objects found at the top level of `bindings`/`meta`:
+
+| Value | Becomes |
+|-------|---------|
+| `Entity`, `DomainRecord`, `arrayOf`/`optionalOf`/`nullableOf` wrapper | `toSafeJSON()` |
+| `Command` | `toJSON()` — already redacted by `beans` |
+| `ValueObject` with `sensitive: true` | the redaction placeholder |
+| any other `ValueObject` | its raw `.value`, unwrapped |
+| domain event | flattened `event.name` / `event.aggregateId` / `event.occurredAt` / `event.payload` keys |
+| `Array` / `Map` / `Set` | converted item by item (a `Map` becomes an object, a `Set` an array — otherwise `JSON.stringify` emits `{}`) |
+
+This matters because `Entity.toJSON()` is the *persistence* contract — lossless and deliberately unredacted — and `JSON.stringify` calls exactly that. Without this stage, `log.info({ user }, "created")` writes the password out, and key-name redaction can't help: the top-level key is `user`, which isn't sensitive.
+
+Scope is the **top level only**, like key-name redaction: recursion *inside* a domain object is `toSafeJSON`'s own job. Collections are the exception, because a collection is how a call site transports domain objects — `{ users: [alice, bob] }` is as common as `{ user: alice }`. Plain nested literals (`{ ctx: { user } }`) are still not reached.
+
+The same conversion covers the three routes a processor cannot see on its own:
+
+- **`err.cause`** — `serializeError` runs before the pipeline, and terroir encourages putting the original failure in `cause`, so the conversion happens inside the error serialiser.
+- **A domain object passed as `meta` itself** — `log.info(user, "created")` is converted before the spread. Without that the entry is not leaked but *emptied*: a spread copies symbol keys, `JSON.stringify` drops them, and the line reads `"meta":{}`.
+- **An instance from a second copy of `@roastery/beans`** — `instanceof` fails across duplicated packages, so detection also matches structurally (`toSafeJSON`, and `defineMeta` for value objects).
+
+### When a processor fails
+
+A processor that throws never reaches your call site. The failure is wrapped in a `ProcessorFailureException` delivered to `onError`, and a diagnostic line naming the processor goes straight to the transports — bypassing the pipeline, so the processor that just threw cannot take down the report of its own failure.
+
+The event in flight is **discarded**. A processor that failed midway leaves it indeterminate — possibly still holding what a redaction step had not finished redacting — and forwarding that would turn a processor failure into the leak it exists to prevent. One lost line beats one leaked secret.
+
+### Opting out
+
+`redact: false` turns off both processors. Two consequences: serialise domain objects yourself (`user.toSafeJSON()`), and note that a live domain instance **cannot cross a `WorkerTransport` boundary** — structured clone keeps only own enumerable string keys, and an entity keeps its state under symbols, so it arrives as `{}`.
+
+**2. The redact processor** masks the `DEFAULT_REDACT_KEYS` — **at any depth**, up to 6 levels:
 
 ```
 authorization · cookie · password · token · secret · apiKey · api_key
 ```
 
 Extra keys passed via `redact: [...]` are **added** to these defaults.
+
+Depth matters because the commonest shape in an HTTP service hides its secret below the top level:
+
+```typescript
+log.info({ req: { headers: { authorization: "Bearer …" } } }, "request");
+// authorization is redacted — it used to come out in the clear
+```
+
+Keys match by **name at any depth**; dot-path *targeting* (`"user.password"`) is still not interpreted. `err.cause` is traversed too, so a plain object handed to `new BadRequestException(…, { cause })` is covered; `err`'s own `name`/`message`/`stack`/`source`/`layer`/`code` are never touched.
+
+Pass an object to control the depth:
+
+```typescript
+createAroma({ redact: { keys: ["customSecret"], maxDepth: 1 } });  // top level only
+```
+
+#### The placeholder
+
+The replacement value comes from `@roastery/beans`, so one call governs the logger and the domain layer alike:
+
+```typescript
+import { configureRedaction } from "@roastery/beans";
+
+configureRedaction({ placeholder: "***" });
+
+// or compute it — this is how partial masking works
+configureRedaction({
+  placeholder: (value, { name, source }) => `<${source}.${name} hidden>`,
+});
+```
+
+It defaults to `"[redacted]"`. When the logger masks by key name, the context is `{ name: <the key>, source: "@roastery/aroma" }`; when it redacts a sensitive `ValueObject`, the context is the value-object's own — whose `source` is the owning aggregate.
 
 ---
 

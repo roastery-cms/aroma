@@ -26,7 +26,7 @@ export type AromaExceptionOptions = {
  * @remarks
  * Sits at the infrastructure layer of the terroir exception hierarchy:
  * `AromaException → InfraException → CoreException → Error`. The
- * `[ExceptionLayer]` discriminator is pinned to `"infra"` by
+ * `[Layer]` discriminator is pinned to `"infra"` by
  * `InfraException`.
  *
  * @example
@@ -49,12 +49,12 @@ export class AromaException extends InfraException {
 	public readonly source: string;
 
 	public constructor(message: string, options: AromaExceptionOptions = {}) {
-		super(message);
+		super(
+			message,
+			options.cause !== undefined ? { cause: options.cause } : undefined,
+		);
 		this.message = message;
 		this.source = options.source ?? "@roastery/aroma";
-		if (options.cause !== undefined) {
-			this.cause = options.cause;
-		}
 	}
 }
 
@@ -94,5 +94,58 @@ export class BackpressureDropException extends AromaException {
 	) {
 		super(message, options);
 		this.dropCount = options.dropCount;
+	}
+}
+
+/**
+ * Raised when a processor throws while transforming an event.
+ *
+ * @remarks
+ * The pipeline is no longer only our own trivial, synchronous code. Since the
+ * domain integration it runs `@roastery/beans` code (`toSafeJSON`, recursive,
+ * with value-object getters along the way) and, through the redaction
+ * placeholder, **arbitrary consumer code**. Any of it can throw, and
+ * `Logger.emit` used to run the pipeline unguarded — so `log.info({ user },
+ * "…")` could take down the very application the logger was supposed to be
+ * observing.
+ *
+ * The event that was in flight is **discarded**, never forwarded. A processor
+ * that throws midway leaves the event in an indeterminate state: possibly
+ * half-converted, possibly still holding the live instance the redaction step
+ * had not finished redacting. Handing that to the transports would turn the
+ * failure of a security processor into exactly the leak it exists to prevent.
+ * Losing one log line is strictly better — and it is never lost silently: the
+ * failure reaches `onError`, and a diagnostic line naming the processor is
+ * written straight to the transports.
+ *
+ * @example
+ * ```ts
+ * import { createAroma, ProcessorFailureException } from "@roastery/aroma";
+ *
+ * createAroma({
+ *   onError: (err) => {
+ *     if (err instanceof ProcessorFailureException) {
+ *       metrics.increment("logger.processor_failure", {
+ *         processor: err.processorName,
+ *       });
+ *     }
+ *   },
+ * });
+ * ```
+ *
+ * @see {@link AromaException}
+ * @see {@link IProcessor} — the contract whose failure this reports.
+ */
+export class ProcessorFailureException extends AromaException {
+	public override readonly name = "Processor Failure Exception";
+	/** `IProcessor.name` of the processor that threw, or `"<unnamed>"`. */
+	public readonly processorName: string;
+
+	public constructor(
+		message: string,
+		options: AromaExceptionOptions & { processorName: string },
+	) {
+		super(message, options);
+		this.processorName = options.processorName;
 	}
 }

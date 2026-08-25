@@ -16,6 +16,7 @@
  */
 
 export type { Bindings } from "@/types/bindings";
+export type { IDomainLoggable } from "@/types/domain-loggable.interface";
 export type { ILogEvent } from "@/types/log-event.interface";
 export type { LogLevel, LogLevelNumeric } from "@/types/log-level";
 export { LEVEL_NUMERIC } from "@/types/log-level";

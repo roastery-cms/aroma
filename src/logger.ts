@@ -1,4 +1,8 @@
-import { AromaException } from "@/exceptions/aroma-exception";
+import {
+	AromaException,
+	ProcessorFailureException,
+} from "@/exceptions/aroma-exception";
+import { domainSafeValue } from "@/internal/domain-safe";
 import { NOOP_VOID } from "@/internal/noop";
 import { serializeError } from "@/internal/serialize-error";
 import type { Bindings } from "@/types/bindings";
@@ -67,6 +71,69 @@ const LEVELS: ReadonlyArray<LogLevel> = [
 type LevelMethod = (first?: unknown, second?: unknown) => void;
 
 /**
+ * The lowest severity any transport would accept, as a number to compare
+ * against before doing any work.
+ *
+ * A transport with no `level` of its own accepts everything, so one of those
+ * disables the shortcut entirely. **No transports at all** means no possible
+ * recipient, and the shortcut then drops every event — which is the honest
+ * reading of "would anyone receive this?", and why a `Logger` built without
+ * transports never runs its processors.
+ */
+function lowestAcceptedLevel(transports: ReadonlyArray<ITransport>): number {
+	let lowest = Number.POSITIVE_INFINITY;
+
+	for (const transport of transports) {
+		if (transport.level === undefined) {
+			return Number.NEGATIVE_INFINITY;
+		}
+		lowest = Math.min(lowest, LEVEL_NUMERIC[transport.level]);
+	}
+
+	return lowest;
+}
+
+/** Shared empty bindings for the diagnostic line, which deliberately carries none. */
+const EMPTY_BINDINGS: Readonly<Bindings> = Object.freeze({});
+
+/**
+ * Interpret the first argument of a level call as `meta`, converting it first
+ * when it is itself a `@roastery/beans` domain object.
+ *
+ * @remarks
+ * `log.info(user, "created")` would otherwise be **silently emptied**, not
+ * leaked: `emit` spreads `meta`, and a spread copies own enumerable keys
+ * including symbol ones — so `[Context]`, `[Properties]` and `[Source]` come
+ * across holding live value objects while no string key does. `JSON.stringify`
+ * then drops the symbols and the line reads `"meta":{}`. The domain processor
+ * cannot help: by the time it runs the spread has happened and what is left is
+ * no longer recognisable as a domain object.
+ *
+ * The prototype check keeps this off the hot path. A plain literal — what
+ * almost every call site passes — has `Object.prototype`, so the common case
+ * costs one `getPrototypeOf` and nothing else; only a class instance is worth
+ * running the converter over.
+ *
+ * A value object converts to a primitive rather than an object (that is the
+ * point of unwrapping it), so it is wrapped under `value` to stay spreadable.
+ */
+function asMeta(first: object): Bindings {
+	const prototype = Object.getPrototypeOf(first);
+	if (prototype === Object.prototype || prototype === null) {
+		return first as Bindings;
+	}
+
+	const safe = domainSafeValue(first, "meta");
+	if (safe === first) {
+		return first as Bindings;
+	}
+
+	return typeof safe === "object" && safe !== null
+		? (safe as Bindings)
+		: ({ value: safe } as Bindings);
+}
+
+/**
  * Bundled concrete implementation of `ILogger`. Composes any number of
  * `ITransport`s, applies redaction, gates broadcasts by severity, and
  * surfaces transport failures via the optional `onError` callback.
@@ -107,6 +174,7 @@ export class Logger<TBindings extends Bindings = Bindings>
 	private readonly transports: ReadonlyArray<ITransport>;
 	private readonly processors: ReadonlyArray<IProcessor>;
 	private readonly onError?: (err: AromaException) => void;
+	private readonly minTransportLevel: number;
 
 	public declare trace: ILogger["trace"];
 	public declare debug: ILogger["debug"];
@@ -123,6 +191,7 @@ export class Logger<TBindings extends Bindings = Bindings>
 		this.transports = options.transports ?? [];
 		this.processors = options.processors ?? [];
 		this.onError = options.onError;
+		this.minTransportLevel = lowestAcceptedLevel(this.transports);
 
 		for (const lvl of LEVELS) {
 			const fn: LevelMethod =
@@ -188,7 +257,7 @@ export class Logger<TBindings extends Bindings = Bindings>
 					msg = second;
 				}
 			} else if (typeof first === "object" && first !== null) {
-				const obj = first as Bindings;
+				const obj = asMeta(first);
 				const maybeErr = obj.err;
 				if (maybeErr instanceof Error) {
 					err = maybeErr;
@@ -212,6 +281,15 @@ export class Logger<TBindings extends Bindings = Bindings>
 		meta: Bindings | undefined,
 		err: Error | undefined,
 	): void {
+		// Nothing downstream would take this event, so nothing upstream should be
+		// spent on it. The logger's own threshold is already resolved at
+		// construction (methods below it are `NOOP_VOID`); this is the same idea
+		// applied to the transports' thresholds, which used to be checked only
+		// *after* the whole pipeline had run.
+		if (LEVEL_NUMERIC[level] < this.minTransportLevel) {
+			return;
+		}
+
 		const contextBindings = contextReader?.();
 		const mergedBindings = contextBindings
 			? { ...this.bindings, ...contextBindings }
@@ -227,12 +305,25 @@ export class Logger<TBindings extends Bindings = Bindings>
 		};
 
 		for (const processor of this.processors) {
-			event = processor.process(event);
+			try {
+				event = processor.process(event);
+			} catch (processorError) {
+				this.handleProcessorError(processor, processorError);
+				return;
+			}
 			if (event === null) return;
 		}
 
-		const levelValue = LEVEL_NUMERIC[level];
+		this.broadcast(event, LEVEL_NUMERIC[level]);
+	}
 
+	/**
+	 * Hand a finished event to every transport whose own `level` accepts it,
+	 * fire-and-forget. Sync throws and rejected promises both land in
+	 * `onError`; neither reaches the caller, and one failing transport never
+	 * blocks its peers.
+	 */
+	private broadcast(event: ILogEvent, levelValue: number): void {
 		for (const transport of this.transports) {
 			if (
 				transport.level !== undefined &&
@@ -252,6 +343,51 @@ export class Logger<TBindings extends Bindings = Bindings>
 				this.handleTransportError(transport, writeError);
 			}
 		}
+	}
+
+	/**
+	 * Report a processor that threw, without letting the failure reach the
+	 * caller and without forwarding the event it was working on.
+	 *
+	 * Two independent notifications, because a dropped log line must never be
+	 * a silent one: the `ProcessorFailureException` goes to `onError`, and a
+	 * diagnostic line goes straight to the transports.
+	 *
+	 * That line carries the processor's name and the error's message and
+	 * **nothing from the original payload** — not even `bindings`. The payload
+	 * is precisely what nobody can vouch for at this point: the processor that
+	 * failed may have been the one redacting it. And it goes directly to
+	 * `broadcast`, never back through the pipeline, so the processor that just
+	 * threw cannot take down the report of its own failure.
+	 */
+	private handleProcessorError(processor: IProcessor, reason: unknown): void {
+		const processorName = processor.name ?? "<unnamed>";
+		const failure = new ProcessorFailureException(
+			`processor "${processorName}" failed`,
+			{ cause: reason, processorName },
+		);
+
+		if (this.onError) {
+			try {
+				this.onError(failure);
+			} catch {
+				// swallow — best-effort end-to-end
+			}
+		}
+
+		this.broadcast(
+			{
+				level: "error",
+				time: Date.now(),
+				msg: failure.message,
+				bindings: EMPTY_BINDINGS,
+				meta: {
+					processor: processorName,
+					reason: reason instanceof Error ? reason.message : String(reason),
+				},
+			},
+			LEVEL_NUMERIC.error,
+		);
 	}
 
 	private handleTransportError(transport: ITransport, reason: unknown): void {

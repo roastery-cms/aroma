@@ -23,6 +23,21 @@ import type { ILogEvent } from "@/types/log-event.interface";
  *   `createEnrichProcessor`).
  * - A processor that returns `null` **stops the pipeline** — subsequent
  *   processors are not invoked and the event reaches no transport.
+ * - **A processor that throws never reaches the caller.** `Logger.emit`
+ *   catches it, wraps it in a `ProcessorFailureException` delivered to
+ *   `onError`, and writes a diagnostic line straight to the transports. The
+ *   event in flight is **discarded**, because a processor that failed midway
+ *   leaves it indeterminate — possibly still holding what a redaction step had
+ *   not finished redacting — and forwarding that would turn a processor
+ *   failure into a leak. Prefer returning `null` to throwing when you mean to
+ *   drop an event: `null` is a decision, a throw is an accident.
+ * - **A processor must not raise an event's severity.** The lowest level any
+ *   transport accepts is resolved when the logger is built, and an event below
+ *   it never enters the pipeline at all — so a processor that rewrote
+ *   `event.level` upwards would be rewriting something that already decided
+ *   whether it would run. Lowering is equally pointless: the routing decision
+ *   is made from the level the event arrived with. Change severity at the call
+ *   site.
  * - Processors are invoked **synchronously**. Async work (e.g., remote
  *   sampling decisions) does not belong here; put it inside a transport.
  *
@@ -30,6 +45,7 @@ import type { ILogEvent } from "@/types/log-event.interface";
  * @see {@link createEnrichProcessor}
  * @see {@link createFilterProcessor}
  * @see {@link createSampleProcessor}
+ * @see {@link ProcessorFailureException} — what a throw is reported as.
  */
 export interface IProcessor {
 	/**

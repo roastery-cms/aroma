@@ -205,11 +205,11 @@ describe("Logger — redaction (via processor)", () => {
 
 		expect(sink.events[0]?.bindings).toEqual({
 			service: "api",
-			password: "[REDACTED]",
+			password: "[redacted]",
 		});
 		expect(sink.events[0]?.meta).toEqual({
 			userId: 7,
-			token: "[REDACTED]",
+			token: "[redacted]",
 			safe: "ok",
 		});
 	});

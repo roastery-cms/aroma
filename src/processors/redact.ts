@@ -1,4 +1,4 @@
-import { redactShallow } from "@/internal/redact";
+import { DEFAULT_REDACT_MAX_DEPTH, redactDeep } from "@/internal/redact";
 import type { ILogEvent } from "@/types/log-event.interface";
 import type { IProcessor } from "@/types/processor.interface";
 
@@ -9,19 +9,41 @@ import type { IProcessor } from "@/types/processor.interface";
  */
 export type RedactProcessorOptions = {
 	/**
-	 * Top-level field names whose values get replaced with `"[REDACTED]"`.
-	 * Empty array → processor is a no-op pass-through.
+	 * Field names whose values get replaced with the configured placeholder,
+	 * wherever they appear in `bindings`, `meta` or `err.cause`. Empty array →
+	 * processor is a no-op pass-through.
 	 */
 	keys: ReadonlyArray<string>;
+	/**
+	 * How many levels deep to look. Defaults to
+	 * {@link DEFAULT_REDACT_MAX_DEPTH}.
+	 *
+	 * @remarks
+	 * `1` restores the historical top-level-only behaviour exactly, which is
+	 * the escape hatch for a consumer who depends on seeing nested fields in
+	 * the clear.
+	 */
+	maxDepth?: number;
 };
 
 /**
- * Build a processor that replaces sensitive top-level fields in an event's
- * `bindings` and `meta` with the `"[REDACTED]"` sentinel.
+ * Build a processor that replaces sensitive fields in an event's `bindings`,
+ * `meta` and `err.cause` with the configured redaction placeholder.
  *
- * Scope is intentionally **shallow** in MVP — nested paths (e.g.
- * `"user.password"`) are not interpreted. Future versions can opt-in to
- * dot-paths additively without breaking callers using shallow keys today.
+ * @remarks
+ * Scope is **deep** by key name: a listed key is masked wherever it appears,
+ * to {@link RedactProcessorOptions.maxDepth} levels. The top-level-only
+ * behaviour it replaces left the commonest shape in an HTTP service exposed —
+ * `{ req: { headers: { authorization } } }` keeps its secret three levels
+ * down, and no domain processor reaches it because a Node request is not a
+ * `beans` object. Dot-path *targeting* (`"user.password"`) is still not
+ * interpreted: keys match by name at any depth, which is the behaviour that
+ * cannot be got wrong by omission.
+ *
+ * `err`'s canonical fields (`name`, `message`, `stack`, `source`, `layer`,
+ * `code`) are never touched — a key list containing `"message"` must not erase
+ * the error's own — but `err.cause` is traversed, since a plain object handed
+ * to `new BadRequestException(…, { cause })` is as good a hiding place as any.
  *
  * @param options - redaction configuration; `keys` lists field names to mask.
  * @returns an `IProcessor` ready to be inserted in the pipeline.
@@ -41,27 +63,67 @@ export type RedactProcessorOptions = {
 export function createRedactProcessor(
 	options: RedactProcessorOptions,
 ): IProcessor {
-	const keys = options.keys;
+	// Built once, not per event: constructing a seven-element Set inside the
+	// traversal cost 248 ns an event — more than the traversal itself.
+	const keys: ReadonlySet<string> = new Set(options.keys);
+	const maxDepth = options.maxDepth ?? DEFAULT_REDACT_MAX_DEPTH;
 
 	return {
 		name: "redact",
 		process(event: ILogEvent): ILogEvent {
-			const nextBindings = redactShallow(
+			const nextBindings = redactDeep(
 				event.bindings as Record<string, unknown>,
 				keys,
+				maxDepth,
 			) as ILogEvent["bindings"];
 			const nextMeta = event.meta
-				? (redactShallow(
+				? (redactDeep(
 						event.meta as Record<string, unknown>,
 						keys,
+						maxDepth,
 					) as ILogEvent["meta"])
 				: event.meta;
+			const nextErr = redactErr(event.err, keys, maxDepth);
 
-			if (nextBindings === event.bindings && nextMeta === event.meta) {
+			if (
+				nextBindings === event.bindings &&
+				nextMeta === event.meta &&
+				nextErr === event.err
+			) {
 				return event;
 			}
 
-			return { ...event, bindings: nextBindings, meta: nextMeta };
+			return {
+				...event,
+				bindings: nextBindings,
+				meta: nextMeta,
+				err: nextErr,
+			};
 		},
 	};
+}
+
+/**
+ * Redact inside a serialised error without disturbing its canonical shape.
+ *
+ * Only `cause` is traversed. The other fields are the error's identity, and
+ * a key list that happened to contain `"message"` or `"stack"` must not blank
+ * them — that would destroy the diagnostic while protecting nothing.
+ */
+function redactErr(
+	err: ILogEvent["err"],
+	keys: ReadonlySet<string>,
+	maxDepth: number,
+): ILogEvent["err"] {
+	if (!err || err.cause === undefined) {
+		return err;
+	}
+
+	// `cause` is a value, not a record, so it is wrapped to reuse the same
+	// traversal — including the top-level key check, which is what catches
+	// `{ cause: { password } }`.
+	const wrapped = { cause: err.cause };
+	const redacted = redactDeep(wrapped, keys, maxDepth + 1);
+
+	return redacted === wrapped ? err : { ...err, cause: redacted.cause };
 }

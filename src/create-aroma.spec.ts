@@ -4,6 +4,7 @@ import type { AromaException } from "@/exceptions/aroma-exception";
 import { Logger } from "@/logger";
 import { FastStdioTransport } from "@/transports/fast-stdio-transport";
 import { NullTransport } from "@/transports/null-transport";
+import type { IProcessor } from "@/types/processor.interface";
 import type { ITransport } from "@/types/transport.interface";
 
 describe("createAroma", () => {
@@ -63,9 +64,9 @@ describe("createAroma", () => {
 		);
 
 		expect(sink.events[0]?.meta).toEqual({
-			authorization: "[REDACTED]",
-			token: "[REDACTED]",
-			apiKey: "[REDACTED]",
+			authorization: "[redacted]",
+			token: "[redacted]",
+			apiKey: "[redacted]",
 			safe: "ok",
 		});
 	});
@@ -80,8 +81,8 @@ describe("createAroma", () => {
 		logger.info({ password: "p", customSecret: "x", safe: "ok" }, "login");
 
 		expect(sink.events[0]?.meta).toEqual({
-			password: "[REDACTED]",
-			customSecret: "[REDACTED]",
+			password: "[redacted]",
+			customSecret: "[redacted]",
 			safe: "ok",
 		});
 	});
@@ -117,7 +118,26 @@ describe("createAroma", () => {
 		logger.info({ password: "secret" }, "test");
 
 		// capture sees the already-redacted password
-		expect(seen[0]).toEqual({ password: "[REDACTED]" });
+		expect(seen[0]).toEqual({ password: "[redacted]" });
+	});
+
+	test("injects [domain, redact] in that order, ahead of user processors", () => {
+		const user: IProcessor = { name: "user", process: (e) => e };
+		const logger = createAroma({ processors: [user] }) as Logger;
+		const processors = (
+			logger as unknown as { processors: ReadonlyArray<IProcessor> }
+		).processors;
+
+		expect(processors.map((p) => p.name)).toEqual(["domain", "redact", "user"]);
+	});
+
+	test("redact: false injects neither the domain nor the redact processor", () => {
+		const logger = createAroma({ redact: false }) as Logger;
+		const processors = (
+			logger as unknown as { processors: ReadonlyArray<IProcessor> }
+		).processors;
+
+		expect(processors).toHaveLength(0);
 	});
 
 	test("passes onError through to Logger", () => {
@@ -137,5 +157,42 @@ describe("createAroma", () => {
 
 		expect(errors).toHaveLength(1);
 		expect(errors[0]?.cause).toBeInstanceOf(Error);
+	});
+});
+
+describe("createAroma — redaction depth", () => {
+	test("redacts a nested key by default", () => {
+		const sink = new NullTransport();
+		const logger = createAroma({ transports: [sink] });
+
+		logger.info({ req: { headers: { authorization: "Bearer x" } } }, "req");
+
+		expect(JSON.stringify(sink.events[0])).not.toContain("Bearer x");
+	});
+
+	test("redact: { maxDepth: 1 } restores the top-level-only behaviour", () => {
+		const sink = new NullTransport();
+		const logger = createAroma({
+			transports: [sink],
+			redact: { maxDepth: 1 },
+		});
+
+		logger.info({ req: { headers: { authorization: "Bearer x" } } }, "req");
+
+		expect(JSON.stringify(sink.events[0])).toContain("Bearer x");
+	});
+
+	test("redact: { keys } still adds to the defaults", () => {
+		const sink = new NullTransport();
+		const logger = createAroma({
+			transports: [sink],
+			redact: { keys: ["customSecret"] },
+		});
+
+		logger.info({ nested: { customSecret: "s", password: "p" } }, "both");
+
+		const nested = sink.events[0]?.meta?.nested as Record<string, unknown>;
+		expect(nested.customSecret).toBe("[redacted]");
+		expect(nested.password).toBe("[redacted]");
 	});
 });

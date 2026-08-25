@@ -6,10 +6,12 @@
  *
  * @see {@link AromaException}
  * @see {@link BackpressureDropException}
+ * @see {@link ProcessorFailureException}
  */
 
 export type { AromaExceptionOptions } from "@/exceptions/aroma-exception";
 export {
 	AromaException,
 	BackpressureDropException,
+	ProcessorFailureException,
 } from "@/exceptions/aroma-exception";

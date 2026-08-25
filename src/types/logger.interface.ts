@@ -1,4 +1,5 @@
 import type { Bindings } from "@/types/bindings";
+import type { IDomainLoggable } from "@/types/domain-loggable.interface";
 
 /**
  * Public contract of the logger: a sync `void`-returning method per
@@ -46,6 +47,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	trace(msg: string): void;
 	trace(err: Error, msg?: string): void;
+	trace(domain: IDomainLoggable, msg?: string): void;
 	trace<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -54,6 +56,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	debug(msg: string): void;
 	debug(err: Error, msg?: string): void;
+	debug(domain: IDomainLoggable, msg?: string): void;
 	debug<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -62,6 +65,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	info(msg: string): void;
 	info(err: Error, msg?: string): void;
+	info(domain: IDomainLoggable, msg?: string): void;
 	info<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -70,6 +74,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	warn(msg: string): void;
 	warn(err: Error, msg?: string): void;
+	warn(domain: IDomainLoggable, msg?: string): void;
 	warn<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -78,6 +83,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	error(msg: string): void;
 	error(err: Error, msg?: string): void;
+	error(domain: IDomainLoggable, msg?: string): void;
 	error<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -87,6 +93,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	fatal(msg: string): void;
 	fatal(err: Error, msg?: string): void;
+	fatal(domain: IDomainLoggable, msg?: string): void;
 	fatal<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**
@@ -96,6 +103,7 @@ export interface ILogger<TBindings extends Bindings = Bindings> {
 	 */
 	log(msg: string): void;
 	log(err: Error, msg?: string): void;
+	log(domain: IDomainLoggable, msg?: string): void;
 	log<TMeta extends Bindings>(meta: TMeta, msg?: string): void;
 
 	/**

@@ -6,6 +6,7 @@ paths = ["./src"]
 preload = [
   "./test/set-max-listeners-to-zero.ts",
   "./test/replace-node-env.ts",
+  "./test/reset-beans-redaction.ts",
 ]
 coveragePathIgnorePatterns = [
   # Test files

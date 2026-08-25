@@ -1,6 +1,8 @@
 import { DEFAULT_REDACT_KEYS } from "@/constants/redact-defaults";
 import type { AromaException } from "@/exceptions/aroma-exception";
+import { DEFAULT_REDACT_MAX_DEPTH } from "@/internal/redact";
 import { Logger } from "@/logger";
+import { createDomainProcessor } from "@/processors/domain";
 import { createRedactProcessor } from "@/processors/redact";
 import { FastStdioTransport } from "@/transports/fast-stdio-transport";
 import type { Bindings } from "@/types/bindings";
@@ -37,15 +39,53 @@ export type CreateAromaArgs = {
 	 */
 	transports?: ReadonlyArray<ITransport>;
 	/**
-	 * Additional sensitive field names to mask in `bindings` and `meta`.
-	 * These are **added** to `DEFAULT_REDACT_KEYS`. Set to `false` to
-	 * disable redaction entirely (including defaults).
+	 * Additional sensitive field names to mask in `bindings`, `meta` and
+	 * `err.cause`. These are **added** to `DEFAULT_REDACT_KEYS`. Set to
+	 * `false` to disable redaction entirely (including defaults), or pass an
+	 * object to also control how deep the scan goes:
+	 *
+	 * ```ts
+	 * createAroma({ redact: ["customSecret"] });              // added to the defaults
+	 * createAroma({ redact: { keys: [], maxDepth: 1 } });     // top level only
+	 * createAroma({ redact: false });                         // nothing at all
+	 * ```
+	 *
+	 * Keys match **at any depth** by default, which is what protects
+	 * `{ req: { headers: { authorization } } }`. `maxDepth: 1` restores the
+	 * top-level-only behaviour of earlier versions exactly, for a consumer who
+	 * depends on seeing a nested field in the clear.
+	 *
+	 * @remarks
+	 * `false` is the single "no masking" switch: it also skips the
+	 * auto-injected **domain** processor, so `@roastery/beans` objects are
+	 * serialised through their lossless `toJSON()` and a `sensitive` property
+	 * reaches the log in the clear. Whoever asks for no redaction does not
+	 * want to pay for the sweep either.
+	 *
+	 * Two consequences worth knowing before choosing it:
+	 *
+	 * - **Serialise domain objects at the call site.** `user.toSafeJSON()`
+	 *   before it enters the log, rather than passing the instance.
+	 * - **A domain object cannot cross a `WorkerTransport` boundary.**
+	 *   `postMessage` uses structured clone, which keeps only own enumerable
+	 *   *string* keys; an entity holds its state under symbols, so it arrives
+	 *   at the worker as `{}`. With the processors on this never arises,
+	 *   because the event is already plain by the time a transport sees it.
 	 */
-	redact?: ReadonlyArray<string> | false;
+	redact?:
+		| ReadonlyArray<string>
+		| false
+		| {
+				/** Field names added to `DEFAULT_REDACT_KEYS`. */
+				keys?: ReadonlyArray<string>;
+				/** Levels to descend. Defaults to `DEFAULT_REDACT_MAX_DEPTH`; `1` is top-level only. */
+				maxDepth?: number;
+		  };
 	/**
 	 * Sequential pipeline of processors applied to every event before
-	 * broadcast. The auto-injected redact processor (from `redact` shortcut)
-	 * runs **before** any user-supplied processors.
+	 * broadcast. The auto-injected processors (from the `redact` shortcut)
+	 * run **before** any user-supplied processor, in the order
+	 * `[domain, redact, ...processors]`.
 	 */
 	processors?: ReadonlyArray<IProcessor>;
 	/** Callback fired for each transport whose `write` rejects. Defaults to no callback. */
@@ -54,8 +94,9 @@ export type CreateAromaArgs = {
 
 /**
  * Canonical entry point for `@roastery/aroma`. Build a logger with the
- * default `FastStdioTransport`, default redaction keys, optional extra
- * redaction, optional custom processors, and an optional failure callback.
+ * default `FastStdioTransport`, domain-object safety, default redaction
+ * keys, optional extra redaction, optional custom processors, and an
+ * optional failure callback.
  *
  * @example
  * ```ts
@@ -107,6 +148,7 @@ export type CreateAromaArgs = {
  *
  * @see {@link Logger}
  * @see {@link FastStdioTransport}
+ * @see {@link createDomainProcessor}
  * @see {@link DEFAULT_REDACT_KEYS}
  */
 export function createAroma<TBindings extends Bindings = Bindings>(
@@ -120,9 +162,24 @@ export function createAroma<TBindings extends Bindings = Bindings>(
 	const processors: IProcessor[] = [];
 
 	if (args.redact !== false) {
-		const extraKeys = args.redact ?? [];
-		const keys = [...DEFAULT_REDACT_KEYS, ...extraKeys];
-		processors.push(createRedactProcessor({ keys }));
+		// Domain first: what it produces (unwrapped value-object values, flattened
+		// event keys) must still pass under the key-name redaction.
+		processors.push(createDomainProcessor());
+
+		// `Array.isArray` widens a ReadonlyArray to `any[]` rather than narrowing
+		// the union, so the two accepted shapes are normalised by hand.
+		const redact = args.redact ?? {};
+		const options: { keys?: ReadonlyArray<string>; maxDepth?: number } =
+			Array.isArray(redact)
+				? { keys: redact as ReadonlyArray<string> }
+				: (redact as { keys?: ReadonlyArray<string>; maxDepth?: number });
+
+		processors.push(
+			createRedactProcessor({
+				keys: [...DEFAULT_REDACT_KEYS, ...(options.keys ?? [])],
+				maxDepth: options.maxDepth ?? DEFAULT_REDACT_MAX_DEPTH,
+			}),
+		);
 	}
 
 	if (args.processors) {

@@ -1,0 +1,183 @@
+{
+	"version": 2,
+	"createdAt": "2026-08-25T16:57:37.265Z",
+	"runtime": {
+		"bun": "1.3.14",
+		"platform": "linux",
+		"arch": "x64"
+	},
+	"cases": [
+		{
+			"id": "control",
+			"label": "control — JSON.stringify of a fixed object (no aroma code)",
+			"note": "not a target: it contains none of this package, so a change here means the machine got slower, and `compare.ts` divides that out of every other case before deciding whether anything regressed",
+			"iterations": 2000000,
+			"rounds": 45,
+			"nsPerOp": 98.647,
+			"fastestNsPerOp": 92.346,
+			"opsPerSec": 10137156,
+			"spread": 0.073
+		},
+		{
+			"id": "dropped",
+			"label": "log.trace() below threshold (NOOP_VOID)",
+			"iterations": 100000000,
+			"rounds": 45,
+			"nsPerOp": 0.143,
+			"fastestNsPerOp": 0.137,
+			"opsPerSec": 6993006993,
+			"spread": 0.058
+		},
+		{
+			"id": "core-msg",
+			"label": "bare Logger, message only",
+			"iterations": 1000000,
+			"rounds": 45,
+			"nsPerOp": 55.233,
+			"fastestNsPerOp": 47.676,
+			"opsPerSec": 18105118,
+			"spread": 0.22
+		},
+		{
+			"id": "core-meta",
+			"label": "bare Logger, 4-key meta",
+			"iterations": 1000000,
+			"rounds": 45,
+			"nsPerOp": 59.115,
+			"fastestNsPerOp": 55.206,
+			"opsPerSec": 16916180,
+			"spread": 0.126
+		},
+		{
+			"id": "aroma-msg",
+			"label": "createAroma, message only",
+			"iterations": 500000,
+			"rounds": 45,
+			"nsPerOp": 136.426,
+			"fastestNsPerOp": 135.588,
+			"opsPerSec": 7329981,
+			"spread": 0.17
+		},
+		{
+			"id": "aroma-meta",
+			"label": "createAroma, 4-key meta (no redact hit)",
+			"iterations": 500000,
+			"rounds": 45,
+			"nsPerOp": 249.83,
+			"fastestNsPerOp": 234.948,
+			"opsPerSec": 4002722,
+			"spread": 0.1
+		},
+		{
+			"id": "aroma-redact",
+			"label": "createAroma, meta with two redacted keys",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 292.717,
+			"fastestNsPerOp": 282.877,
+			"opsPerSec": 3416269,
+			"spread": 0.076
+		},
+		{
+			"id": "domain-entity",
+			"label": "meta carrying an Entity (→ toSafeJSON)",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 1221.575,
+			"fastestNsPerOp": 1162.151,
+			"opsPerSec": 818615,
+			"spread": 0.085
+		},
+		{
+			"id": "domain-collection",
+			"label": "meta carrying an array of entities (per-item descent)",
+			"iterations": 60000,
+			"rounds": 45,
+			"nsPerOp": 2341.92,
+			"fastestNsPerOp": 2232.19,
+			"opsPerSec": 427000,
+			"spread": 0.109
+		},
+		{
+			"id": "domain-vo",
+			"label": "meta carrying a sensitive ValueObject",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 330.991,
+			"fastestNsPerOp": 315.91,
+			"opsPerSec": 3021230,
+			"spread": 0.145
+		},
+		{
+			"id": "domain-event",
+			"label": "meta carrying a DomainEvent (→ flattened)",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 416.945,
+			"fastestNsPerOp": 383.404,
+			"opsPerSec": 2398398,
+			"spread": 0.245
+		},
+		{
+			"id": "deep-miss",
+			"label": "4-level nested payload, nothing sensitive (lazy clone)",
+			"iterations": 200000,
+			"rounds": 45,
+			"nsPerOp": 636.966,
+			"fastestNsPerOp": 618.196,
+			"opsPerSec": 1569943,
+			"spread": 0.08
+		},
+		{
+			"id": "deep-hit",
+			"label": "4-level nested payload with authorization at the bottom",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 786.132,
+			"fastestNsPerOp": 746.935,
+			"opsPerSec": 1272051,
+			"spread": 0.114
+		},
+		{
+			"id": "error",
+			"label": "log.error() with a CoreException + cause",
+			"iterations": 250000,
+			"rounds": 45,
+			"nsPerOp": 585.1,
+			"fastestNsPerOp": 565.466,
+			"opsPerSec": 1709110,
+			"spread": 0.112
+		},
+		{
+			"id": "child",
+			"label": "logger.child({ requestId })",
+			"iterations": 250000,
+			"rounds": 45,
+			"nsPerOp": 284.003,
+			"fastestNsPerOp": 273.114,
+			"opsPerSec": 3521090,
+			"spread": 0.096
+		},
+		{
+			"id": "serialize",
+			"label": "serializeEvent() on a canonical event",
+			"iterations": 250000,
+			"rounds": 45,
+			"nsPerOp": 547.669,
+			"fastestNsPerOp": 541.393,
+			"opsPerSec": 1825920,
+			"spread": 0.109
+		},
+		{
+			"id": "context",
+			"label": "runWithContext + info (AsyncLocalStorage)",
+			"note": "importing @/context registers a process-wide context reader that every emit then reads; measuring it in its own process is what keeps that cost off the other cases",
+			"iterations": 150000,
+			"rounds": 45,
+			"nsPerOp": 300.156,
+			"fastestNsPerOp": 271.502,
+			"opsPerSec": 3331601,
+			"spread": 0.181
+		}
+	]
+}

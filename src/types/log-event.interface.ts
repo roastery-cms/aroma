@@ -60,6 +60,14 @@ export interface ILogEvent {
 		source: string;
 		/** Architectural layer discriminator (`"internal"` for wrapped errors). */
 		layer: CoreExceptionType;
+		/**
+		 * HTTP status the exception maps to. Present only when the exception is
+		 * an `ApplicationException` — the one layer of the terroir hierarchy
+		 * that declares `code` as a canonical, abstract field. Absent for
+		 * domain, infra and internal exceptions, which are transport-agnostic
+		 * by design.
+		 */
+		code?: number;
 		/** Recursively serialised `cause`; a non-`Error` cause is passed through unchanged. */
 		cause?: unknown;
 	};

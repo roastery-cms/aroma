@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { CoreException } from "@roastery/terroir/exceptions/core";
 import { InfraException } from "@roastery/terroir/exceptions/models";
-import { ExceptionLayer } from "@roastery/terroir/exceptions/symbols";
+import { Layer } from "@roastery/terroir/symbols";
 import {
 	AromaException,
 	BackpressureDropException,
@@ -31,11 +31,9 @@ describe("AromaException", () => {
 		expect(err.source).toBe("custom-source");
 	});
 
-	test("[ExceptionLayer] is 'infra'", () => {
+	test("[Layer] is 'infra'", () => {
 		const err = new AromaException("boom");
-		expect((err as unknown as Record<symbol, unknown>)[ExceptionLayer]).toBe(
-			"infra",
-		);
+		expect((err as unknown as Record<symbol, unknown>)[Layer]).toBe("infra");
 	});
 
 	test("message is preserved", () => {
