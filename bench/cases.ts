@@ -12,6 +12,10 @@ import { createAroma } from "@/create-aroma";
 import { AromaException } from "@/exceptions/aroma-exception";
 import { serializeEvent } from "@/internal/serializer";
 import { Logger } from "@/logger";
+import {
+	createRedactProcessor,
+	DEFAULT_REDACT_KEYS,
+} from "@/processors/redact";
 import type { ILogEvent } from "@/types/log-event.interface";
 
 /**
@@ -23,9 +27,12 @@ import type { ILogEvent } from "@/types/log-event.interface";
  *
  * - `dropped` guards the zero-allocation path, the headline optimisation;
  * - `core-*` runs a bare `Logger` with **no** processors, so subtracting it
- *   from the matching `aroma-*` case gives the auto-injected
- *   `[domain, redact]` pair's real cost;
- * - `domain-*` covers what the domain processor actually converts.
+ *   from the matching `aroma-*` case gives the auto-injected `[domain]`
+ *   processor's real cost;
+ * - `domain-*` covers what the domain processor actually converts;
+ * - `redact-optin` is the only case running two visitors in one process, so it
+ *   is where a polymorphic walk call site would show up. The process-per-case
+ *   split hides that everywhere else.
  *
  * Definitions live apart from the runner because every case is measured in
  * its **own process** — `bench/case-runner.ts` imports this module, picks one
@@ -51,8 +58,20 @@ class OrderConfirmed extends DomainEvent {
 
 export const sink = new DiscardTransport();
 
-/** The default pipeline: `[domain, redact]` plus the discarding sink. */
-const aroma = createAroma({ transports: [sink] });
+/**
+ * The default pipeline: `[domain]` plus the discarding sink.
+ *
+ * `acknowledgeNoMasking` because measuring the default is the whole point here
+ * — without it the startup warning fires once per case process and buries the
+ * table it is supposed to be measuring.
+ */
+const aroma = createAroma({ transports: [sink], acknowledgeNoMasking: true });
+
+/** The same, with key-name masking opted back in — no longer the default. */
+const guarded = createAroma({
+	transports: [sink],
+	processors: [createRedactProcessor({ keys: [...DEFAULT_REDACT_KEYS] })],
+});
 
 /** Same wiring with the processors removed — the pipeline floor. */
 const core = new Logger({ transports: [sink] });
@@ -79,7 +98,7 @@ const users = [
 	}),
 ];
 const domainEvent = new OrderConfirmed(user.toJSON().id);
-/** The shape an HTTP service logs constantly — the reason redaction went deep. */
+/** The shape an HTTP service logs constantly — the reason the walk goes deep. */
 const DEEP_CLEAN = {
 	ctx: {
 		request: {
@@ -97,6 +116,95 @@ const DEEP_SECRET = {
 		},
 		route: "/checkout",
 	},
+};
+
+/** An entity below a plain literal: the payload the top-level-only conversion leaked. */
+const DEEP_DOMAIN = { ctx: { request: { user } } };
+
+/**
+ * Breadth rather than depth. Nesting cost is bounded by the payload; the
+ * number of keys the walk has to look at is not, and this is the shape where a
+ * consumer would notice the deep conversion.
+ */
+const WIDE_ROWS = {
+	rows: Array.from({ length: 8 }, (_, index) => ({
+		id: index,
+		sku: `SKU-${index}`,
+		qty: index + 1,
+		price: 1999,
+		currency: "BRL",
+		warehouse: "sp-01",
+	})),
+};
+
+/**
+ * The width the node budget exists for, and the shape a consumer would notice.
+ * `maxDepth` bounds how deep a payload can take the walk; only this bounds how
+ * wide, and the cost is linear — about 9 ns a node either way.
+ */
+const HUGE_ROWS = {
+	rows: Array.from({ length: 200 }, (_, index) => ({
+		id: index,
+		sku: `SKU-${index}`,
+		qty: index + 1,
+		price: 1999,
+		currency: "BRL",
+		warehouse: "sp-01",
+	})),
+};
+
+/**
+ * Deeper than the old bound of 6 and shallower than the new one of 24, with
+ * nothing sensitive in it. Nothing else in this file goes past four levels, so
+ * without this the cost of raising `MAX_WALK_DEPTH` would be unmeasured — the
+ * walk used to stop at 6 and hand the rest back untouched, and now it goes all
+ * the way down.
+ */
+const DEEP_CLEAN_16 = (() => {
+	let node: Record<string, unknown> = { leaf: "bottom", n: 0 };
+	for (let level = 0; level < 16; level++) {
+		node = { nested: node, level, tag: `l${level}` };
+	}
+	return node;
+})();
+
+/**
+ * Plain literals carrying their own `toJSON()`, which is the shape door 8
+ * moved: they used to be walked property by property and now take the
+ * projection branch instead. A response DTO is exactly this.
+ */
+const DTO_ROWS = {
+	rows: Array.from({ length: 8 }, (_, index) => ({
+		id: index,
+		sku: `SKU-${index}`,
+		qty: index + 1,
+		toJSON(this: { id: number; sku: string; qty: number }) {
+			return { id: this.id, sku: this.sku, qty: this.qty };
+		},
+	})),
+};
+
+/**
+ * Class instances, which is the branch that pays for door 7: every object node
+ * costs one property load to ask whether it projects through `toJSON()`, and
+ * one of these actually does.
+ */
+class Envelope {
+	public constructor(
+		public readonly id: number,
+		public readonly sku: string,
+	) {}
+	public toJSON(): unknown {
+		return { id: this.id, sku: this.sku };
+	}
+}
+
+const CLASS_ROWS = {
+	rows: Array.from(
+		{ length: 8 },
+		(_, index) => new Envelope(index, `SKU-${index}`),
+	),
+	when: new Date(0),
 };
 
 const failure = new AromaException("transport down", {
@@ -184,12 +292,12 @@ export const CASES: BenchCase[] = [
 		},
 	},
 	{
-		id: "aroma-redact",
-		label: "createAroma, meta with two redacted keys",
-		iterations: 150_000,
+		id: "redact-optin",
+		label: "createAroma + createRedactProcessor, meta with two masked keys",
+		iterations: 200_000,
 		batch: (iterations) => {
 			for (let index = 0; index < iterations; index++) {
-				aroma.info(SECRET_META, "login attempt");
+				guarded.info(SECRET_META, "user login");
 			}
 		},
 	},
@@ -245,11 +353,75 @@ export const CASES: BenchCase[] = [
 	},
 	{
 		id: "deep-hit",
-		label: "4-level nested payload with authorization at the bottom",
+		label: "4-level nested payload, authorization masked at the bottom",
 		iterations: 150_000,
 		batch: (iterations) => {
 			for (let index = 0; index < iterations; index++) {
-				aroma.info(DEEP_SECRET, "request");
+				guarded.info(DEEP_SECRET, "request");
+			}
+		},
+	},
+	{
+		id: "deep-domain",
+		label: "entity below two plain literals (the top-level-only leak)",
+		iterations: 150_000,
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(DEEP_DOMAIN, "request");
+			}
+		},
+	},
+	{
+		id: "deep-literals",
+		label: "8 plain 6-key rows — breadth, not depth",
+		iterations: 100_000,
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(WIDE_ROWS, "listing");
+			}
+		},
+	},
+	{
+		id: "class-rows",
+		label:
+			"8 class instances with toJSON() plus a Date — the projection branch",
+		iterations: 100_000,
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(CLASS_ROWS, "listing");
+			}
+		},
+	},
+	{
+		id: "deep-clean-16",
+		label:
+			"16-level nested payload, nothing sensitive — the raised depth bound",
+		iterations: 100_000,
+		note: "the row that moves if MAX_WALK_DEPTH is worth what it costs",
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(DEEP_CLEAN_16, "request");
+			}
+		},
+	},
+	{
+		id: "dto-rows",
+		label: "8 plain literals with their own toJSON() — the widened projection",
+		iterations: 100_000,
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(DTO_ROWS, "listing");
+			}
+		},
+	},
+	{
+		id: "wide-rows",
+		label: "200 plain 6-key rows — the width the node budget guards",
+		iterations: 5_000,
+		note: "linear in nodes, so this is the row that moves if the walk gets more expensive per node rather than per event",
+		batch: (iterations) => {
+			for (let index = 0; index < iterations; index++) {
+				aroma.info(HUGE_ROWS, "listing");
 			}
 		},
 	},

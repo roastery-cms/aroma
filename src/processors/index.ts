@@ -8,12 +8,16 @@
  * @see {@link IProcessor} — implement this in your own processors.
  * @see {@link createDomainProcessor}
  * @see {@link createRedactProcessor}
+ * @see {@link DEFAULT_REDACT_KEYS}
  * @see {@link createEnrichProcessor}
  * @see {@link createFilterProcessor}
  * @see {@link createSampleProcessor}
  */
 
-export { createDomainProcessor } from "@/processors/domain";
+export {
+	createDomainProcessor,
+	type DomainProcessorOptions,
+} from "@/processors/domain";
 export { createEcsProcessor } from "@/processors/ecs-mapping";
 export { createEnrichProcessor } from "@/processors/enrich";
 export {
@@ -22,6 +26,7 @@ export {
 } from "@/processors/filter";
 export {
 	createRedactProcessor,
+	DEFAULT_REDACT_KEYS,
 	type RedactProcessorOptions,
 } from "@/processors/redact";
 export {

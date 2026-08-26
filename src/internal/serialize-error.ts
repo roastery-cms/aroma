@@ -3,6 +3,7 @@ import { CoreException } from "@roastery/terroir/exceptions/core";
 import { ApplicationException } from "@roastery/terroir/exceptions/models";
 import { Layer } from "@roastery/terroir/symbols";
 import { domainSafeValue } from "@/internal/domain-safe";
+import type { WalkPlan } from "@/internal/safe-walk";
 import type { ILogEvent } from "@/types/log-event.interface";
 
 /**
@@ -35,6 +36,8 @@ type SerializedError = NonNullable<ILogEvent["err"]>;
  * form, and any other value is passed through unchanged.
  *
  * @param value - the thrown value to serialise; accepts `unknown`.
+ * @param plan - depth-bounded plan for the domain conversion of `cause`.
+ *   Defaults to the shared one.
  * @returns a `{ name, message, stack, source, layer, cause }` object suitable
  *   for assignment onto `ILogEvent.err`.
  *
@@ -50,9 +53,12 @@ type SerializedError = NonNullable<ILogEvent["err"]>;
  *
  * @internal
  */
-export function serializeError(value: unknown): SerializedError {
+export function serializeError(
+	value: unknown,
+	plan?: WalkPlan,
+): SerializedError {
 	const exc = value instanceof CoreException ? value : wrapUnknown(value);
-	return fromCoreException(exc);
+	return fromCoreException(exc, plan);
 }
 
 /**
@@ -74,14 +80,17 @@ function wrapUnknown(value: unknown): UnknownException {
  * has one, and carrying it preserves the hierarchy rather than promoting an
  * ad-hoc own-property.
  */
-function fromCoreException(exc: CoreException): SerializedError {
+function fromCoreException(
+	exc: CoreException,
+	plan: WalkPlan | undefined,
+): SerializedError {
 	const serialized: SerializedError = {
 		name: exc.name,
 		message: exc.message,
 		stack: exc.stack,
 		source: exc.source,
 		layer: exc[Layer],
-		cause: serializeCause((exc as { cause?: unknown }).cause),
+		cause: serializeCause((exc as { cause?: unknown }).cause, plan),
 	};
 
 	if (exc instanceof ApplicationException) {
@@ -106,17 +115,17 @@ function fromCoreException(exc: CoreException): SerializedError {
  * passing it as `cause`). Without this, `new BadRequestException("checkout",
  * "…", { cause: user })` writes the password out.
  */
-function serializeCause(cause: unknown): unknown {
+function serializeCause(cause: unknown, plan: WalkPlan | undefined): unknown {
 	if (cause instanceof CoreException) {
-		return fromCoreException(cause);
+		return fromCoreException(cause, plan);
 	}
 	if (cause instanceof Error) {
 		return {
 			name: cause.name,
 			message: cause.message,
 			stack: cause.stack,
-			cause: serializeCause((cause as { cause?: unknown }).cause),
+			cause: serializeCause((cause as { cause?: unknown }).cause, plan),
 		};
 	}
-	return domainSafeValue(cause, "cause");
+	return domainSafeValue(cause, "cause", plan);
 }

@@ -1,11 +1,33 @@
-import { domainSafeShallow } from "@/internal/domain-safe";
+import { conversionFailed } from "@/internal/conversion-failure";
+import { createDomainPlan, domainSafeDeep } from "@/internal/domain-safe";
+import { assertWalkDepth } from "@/internal/safe-walk";
 import type { ILogEvent } from "@/types/log-event.interface";
 import type { IProcessor } from "@/types/processor.interface";
 
 /**
- * Build a processor that replaces `@roastery/beans` domain objects found at
- * the top level of an event's `bindings` / `meta` with their **safe**
- * serialisation, before anything can reach a transport.
+ * Arguments accepted by {@link createDomainProcessor}.
+ *
+ * @since 0.1.0
+ */
+export type DomainProcessorOptions = {
+	/**
+	 * How many levels to descend. Defaults to `MAX_WALK_DEPTH`.
+	 *
+	 * @remarks
+	 * Past the bound the walk substitutes `"[truncated: depth]"` rather than
+	 * letting a subtree through unconverted — a bound on this walk is a bound on
+	 * visibility, never on safety. Must be an integer in
+	 * `1..MAX_CONFIGURABLE_DEPTH`.
+	 *
+	 * @since 0.1.0
+	 */
+	maxDepth?: number;
+};
+
+/**
+ * Build a processor that replaces every `@roastery/beans` domain object in an
+ * event's `bindings` / `meta` with its **safe** serialisation, before anything
+ * can reach a transport.
  *
  * @remarks
  * This closes a leak that neither package could close alone.
@@ -13,9 +35,9 @@ import type { IProcessor } from "@/types/processor.interface";
  * contract: lossless and deliberately unredacted. `JSON.stringify` — which
  * every transport in this package eventually reaches — calls exactly that.
  * So `log.info({ user }, "created")` would write a `sensitive` property in
- * the clear, and the redact processor cannot help: it is shallow, and the
- * top-level key (`user`) is not itself sensitive. The leak sits one level
- * below it. This processor swaps in `toSafeJSON()`, which redacts.
+ * the clear, and key-name masking cannot help: the top-level key (`user`) is
+ * not itself sensitive, and the leak sits one level below it. This processor
+ * swaps in `toSafeJSON()`, which redacts.
  *
  * It lives in the pipeline rather than in the serialiser on purpose: a
  * `ConsoleTransport` (which goes through `safeStringify`) or a
@@ -32,12 +54,18 @@ import type { IProcessor } from "@/types/processor.interface";
  * - a domain event is flattened into prefixed sibling keys
  *   (`event.name`, `event.aggregateId`, `event.occurredAt`, `event.payload`).
  *
- * Scope is the **top level only**, matching redaction: a domain object nested
- * inside a plain literal is not reached, because recursion inside a domain
- * object is `toSafeJSON`'s own job. Events and bindings that hold no domain
- * object come back by identity, so the pipeline stays allocation-free for
- * the common case.
+ * Scope is **deep**: a domain object is converted wherever it sits, including
+ * below a plain literal, inside an array, a `Map` or a `Set`. An earlier draft
+ * was top-level only, on the reasoning that key-name masking was shallow too —
+ * and when that half went deep and this one did not, `{ ctx: { user } }`
+ * started leaking. Recursion *inside* a domain object remains `toSafeJSON`'s
+ * own job.
  *
+ * Events and bindings that hold no domain object come back by identity, so the
+ * pipeline stays allocation-free for the common case.
+ *
+ * @param options - optional depth bound; see
+ *   {@link DomainProcessorOptions.maxDepth}.
  * @returns an `IProcessor` ready to be inserted in the pipeline.
  *
  * @example
@@ -49,23 +77,43 @@ import type { IProcessor } from "@/types/processor.interface";
  * // meta.user.password → "[redacted]", never the real value
  * ```
  *
- * @see {@link createAroma} — injects this automatically, ahead of redaction,
- *   unless `redact: false`.
- * @see {@link createRedactProcessor} — the key-name half of the same concern.
+ * @since 0.1.0
+ *
+ * @see {@link createAroma} — injects this automatically, and always.
+ * @see {@link createRedactProcessor} — the key-name half, now opt-in.
  * @see {@link IProcessor}
  */
-export function createDomainProcessor(): IProcessor {
+export function createDomainProcessor(
+	options: DomainProcessorOptions = {},
+): IProcessor {
+	const plan = createDomainPlan(assertWalkDepth(options.maxDepth));
+
 	return {
 		name: "domain",
 		process(event: ILogEvent): ILogEvent {
-			const nextBindings = domainSafeShallow(
-				event.bindings as Record<string, unknown>,
-			) as ILogEvent["bindings"];
-			const nextMeta = event.meta
-				? (domainSafeShallow(
-						event.meta as Record<string, unknown>,
-					) as ILogEvent["meta"])
-				: event.meta;
+			// The two records are converted independently so one hostile getter
+			// costs one record rather than the whole line — see `conversionFailed`.
+			let nextBindings: ILogEvent["bindings"];
+			try {
+				nextBindings = domainSafeDeep(
+					event.bindings as Record<string, unknown>,
+					plan,
+				) as ILogEvent["bindings"];
+			} catch (reason) {
+				nextBindings = conversionFailed(reason) as ILogEvent["bindings"];
+			}
+
+			let nextMeta: ILogEvent["meta"];
+			try {
+				nextMeta = event.meta
+					? (domainSafeDeep(
+							event.meta as Record<string, unknown>,
+							plan,
+						) as ILogEvent["meta"])
+					: event.meta;
+			} catch (reason) {
+				nextMeta = conversionFailed(reason) as ILogEvent["meta"];
+			}
 
 			if (nextBindings === event.bindings && nextMeta === event.meta) {
 				return event;

@@ -25,6 +25,8 @@ import type { ITransport } from "@/types/transport.interface";
  * - `size`: rotate when the current file reaches a size threshold (e.g. `"10MB"`).
  * - `interval`: rotate every wall-clock period (`"daily"` or `"hourly"`).
  *
+ * @since 0.0.1
+ *
  * @see {@link FileTransport}
  */
 export type FileRotation = {
@@ -34,6 +36,8 @@ export type FileRotation = {
 
 /**
  * Options accepted by `FileTransport`.
+ *
+ * @since 0.0.1
  *
  * @see {@link FileTransport}
  */
@@ -112,6 +116,8 @@ async function gzipFile(source: string): Promise<void> {
  *   compress: "gzip",
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link ITransport}
  * @see {@link BufferedWriter}

@@ -36,6 +36,8 @@ import type { IDomainLoggable } from "@/types/domain-loggable.interface";
  * @typeParam TBindings - shape of the persistent context attached to this
  *   logger. Accumulates across `child()` calls.
  *
+ * @since 0.0.1
+ *
  * @see {@link Logger} — the bundled concrete implementation.
  * @see {@link createAroma} — recommended construction path.
  * @see {@link NullTransport} — capture transport for tests.

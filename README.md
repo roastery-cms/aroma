@@ -11,7 +11,7 @@ Structured, transport-based logger for the [Roastery CMS](https://github.com/roa
 - **Logger** — pino-style call shape (`log.info({ userId }, "msg")`), six levels (`trace` → `fatal`), `child()` context inheritance, and a **zero-allocation dropped path** (calls below the configured level are bound to a shared no-op at construction time).
 - **Transports** — pluggable sinks. Buffered non-blocking stdio, rotating files, worker-thread offloading, in-memory capture for tests, or any pino-shaped sink via the compat shim.
 - **Processors** — a synchronous pipeline applied once per event before broadcast: redaction, enrichment, filtering, sampling, and ECS remapping.
-- **Redaction by default** — common secret keys are masked out of the box, and `@roastery/beans` domain objects are serialised through their *safe* form so a `sensitive` property can't slip out one level below a harmless key; opt out of both with `redact: false`.
+- **Domain safety by default** — `@roastery/beans` objects are serialised through their *safe* form at any depth, so a `sensitive` property can't slip out below a harmless key. Masking by field name is a one-line opt-in (`createRedactProcessor`), because the domain layer, not the logger, is what knows a field is secret.
 - **Crash-safe** — `error`/`fatal` lines are written **synchronously**, so they survive an immediate `process.exit()`.
 
 ## Technologies
@@ -64,7 +64,7 @@ bun link @roastery/aroma
 
 ## Logger
 
-Build a logger with `createAroma`. Every option is optional — `createAroma()` returns a working logger that writes JSON to stdout/stderr at `"info"` and above, with default redaction applied.
+Build a logger with `createAroma`. Every option is optional — `createAroma()` returns a working logger that writes JSON to stdout/stderr at `"info"` and above, with `@roastery/beans` domain objects converted to their safe form.
 
 ```typescript
 import { createAroma } from "@roastery/aroma";
@@ -74,7 +74,8 @@ const log = createAroma();
 log.info({ userId: 42 }, "user registered");
 // stdout: {"level":"info","time":1700…,"msg":"user registered","bindings":{},"meta":{"userId":42}}
 
-log.info({ password: "x" }, "tried");   // → password redacted by default
+log.info({ user }, "created");          // → entity via toSafeJSON(); sensitive fields masked
+log.info({ password: "x" }, "tried");   // → written as-is; see "Masking by field name"
 
 const req = log.child({ requestId: "abc-123" });
 req.error(new Error("boom"), "checkout failed");
@@ -85,8 +86,7 @@ req.error(new Error("boom"), "checkout failed");
 ```typescript
 const log = createAroma({
   level: "info",                 // minimum severity broadcast to transports
-  redact: ["customSecret"],      // ADDED to the default keys (or `false` to disable redaction)
-  processors: [/* … */],         // run after the auto-injected domain + redact processors
+  processors: [/* … */],         // run after the auto-injected domain processor
   transports: [/* … */],         // defaults to a single FastStdioTransport
   onError: (err) => telemetry.record("logger.failure", err),
 });
@@ -183,8 +183,8 @@ Processors run **synchronously, in declaration order**, once per event before an
 
 | Factory | Description |
 |---------|-------------|
-| `createDomainProcessor()` | Replaces `@roastery/beans` domain objects with their safe form — run **first** |
-| `createRedactProcessor({ keys })` | Masks top-level fields with the configured placeholder, `"[redacted]"` by default (shallow) |
+| `createDomainProcessor()` | Replaces `@roastery/beans` domain objects with their safe form — injected automatically, runs **first** |
+| `createRedactProcessor({ keys })` | Masks fields by name at any depth with the configured placeholder, `"[redacted]"` by default — **opt-in** |
 | `createEnrichProcessor(extras)` | Merges fixed fields into every event's `bindings` |
 | `createFilterProcessor(predicate)` | Drops events failing a predicate |
 | `createSampleProcessor(rates)` | Probabilistically drops events per-level |
@@ -207,11 +207,11 @@ const log = createAroma({
 });
 ```
 
-### Redaction
+### Safety
 
-`createAroma` auto-injects two processors, in this order, unless `redact: false` turns both off — the final pipeline is `[domain, redact, ...processors]`.
+`createAroma` auto-injects **one** processor, ahead of yours — the final pipeline is `[domain, ...processors]`.
 
-**1. The domain processor** converts `@roastery/beans` objects found at the top level of `bindings`/`meta`:
+**The domain processor** converts `@roastery/beans` objects found anywhere in `bindings`/`meta`:
 
 | Value | Becomes |
 |-------|---------|
@@ -219,12 +219,17 @@ const log = createAroma({
 | `Command` | `toJSON()` — already redacted by `beans` |
 | `ValueObject` with `sensitive: true` | the redaction placeholder |
 | any other `ValueObject` | its raw `.value`, unwrapped |
-| domain event | flattened `event.name` / `event.aggregateId` / `event.occurredAt` / `event.payload` keys |
-| `Array` / `Map` / `Set` | converted item by item (a `Map` becomes an object, a `Set` an array — otherwise `JSON.stringify` emits `{}`) |
+| domain event (top level) | flattened `event.name` / `event.aggregateId` / `event.occurredAt` / `event.payload` keys |
+| domain event (deeper) | a nested `{ name, aggregateId, occurredAt, payload? }` object |
+| `Array` / `Map` / `Set` | descended into (a `Map` becomes an object, a `Set` an array — otherwise `JSON.stringify` emits `{}`) |
 
-This matters because `Entity.toJSON()` is the *persistence* contract — lossless and deliberately unredacted — and `JSON.stringify` calls exactly that. Without this stage, `log.info({ user }, "created")` writes the password out, and key-name redaction can't help: the top-level key is `user`, which isn't sensitive.
+This matters because `Entity.toJSON()` is the *persistence* contract — lossless and deliberately unredacted — and `JSON.stringify` calls exactly that. Without this stage, `log.info({ user }, "created")` writes the password out.
 
-Scope is the **top level only**, like key-name redaction: recursion *inside* a domain object is `toSafeJSON`'s own job. Collections are the exception, because a collection is how a call site transports domain objects — `{ users: [alice, bob] }` is as common as `{ user: alice }`. Plain nested literals (`{ ctx: { user } }`) are still not reached.
+Scope is **deep** (6 levels): a domain object is converted wherever it sits — below a plain literal, inside a collection, or inside an ordinary class instance. Recursion *inside* a domain object remains `toSafeJSON`'s own job.
+
+The walk enters everything except binary (`Uint8Array`, `Buffer`, `DataView`). That sounds broad and is not: `Object.keys` returns only own enumerable properties, so a getter declared on a class is never invoked, and `Date`, `Error`, `Promise`, `URL` and `RegExp` have none at all and come back untouched. Width is bounded too — 10.000 objects per walk, past which subtrees are replaced by `"[truncated: node budget]"` rather than passed through unconverted.
+
+A class instance with its own `toJSON()` is followed through it, because that is what `JSON.stringify` will emit — otherwise a DTO holding a domain object in a `#private` field would show the walk nothing and serialise the entity raw. If the projection holds nothing of ours, the original object is handed back untouched, so a `Date` stays a `Date`.
 
 The same conversion covers the three routes a processor cannot see on its own:
 
@@ -232,38 +237,92 @@ The same conversion covers the three routes a processor cannot see on its own:
 - **A domain object passed as `meta` itself** — `log.info(user, "created")` is converted before the spread. Without that the entry is not leaked but *emptied*: a spread copies symbol keys, `JSON.stringify` drops them, and the line reads `"meta":{}`.
 - **An instance from a second copy of `@roastery/beans`** — `instanceof` fails across duplicated packages, so detection also matches structurally (`toSafeJSON`, and `defineMeta` for value objects).
 
-### When a processor fails
+There is no argument that turns this off. A logger that converts nothing is `new Logger({ transports: [...] })` — and note that a live domain instance then **cannot cross a `WorkerTransport` boundary**, because structured clone keeps only own enumerable string keys and an entity keeps its state under symbols, so it arrives as `{}`.
 
-A processor that throws never reaches your call site. The failure is wrapped in a `ProcessorFailureException` delivered to `onError`, and a diagnostic line naming the processor goes straight to the transports — bypassing the pipeline, so the processor that just threw cannot take down the report of its own failure.
+### Masking by field name — opt-in
 
-The event in flight is **discarded**. A processor that failed midway leaves it indeterminate — possibly still holding what a redaction step had not finished redacting — and forwarding that would turn a processor failure into the leak it exists to prevent. One lost line beats one leaked secret.
+**Nothing is masked by field name unless you ask.** The domain layer knows which of *its* fields are sensitive; a key list inside the logger duplicates that knowledge imperfectly and charges every event for the privilege. So these all reach the log as written:
 
-### Opting out
+```typescript
+log.info({ password: "hunter2" }, "signup");                          // written out
+log.info({ req: { headers: { authorization: "Bearer …" } } }, "req"); // written out
+log.info({ stripe: { token: "tok_…" } }, "charged");                  // written out
+```
 
-`redact: false` turns off both processors. Two consequences: serialise domain objects yourself (`user.toSafeJSON()`), and note that a live domain instance **cannot cross a `WorkerTransport` boundary** — structured clone keeps only own enumerable string keys, and an entity keeps its state under symbols, so it arrives as `{}`.
+None of those is a domain object, and none ever will be — a Node request belongs to Node, a Stripe response to Stripe, and a DTO at the edge has not been validated into value objects yet. That is exactly where you want the key-name processor:
 
-**2. The redact processor** masks the `DEFAULT_REDACT_KEYS` — **at any depth**, up to 6 levels:
+```typescript
+import { createAroma } from "@roastery/aroma";
+import { createRedactProcessor, DEFAULT_REDACT_KEYS } from "@roastery/aroma/processors";
+
+const log = createAroma({
+  processors: [createRedactProcessor({ keys: [...DEFAULT_REDACT_KEYS, "customSecret"] })],
+});
+```
+
+`DEFAULT_REDACT_KEYS` is a starting list, not a default:
 
 ```
 authorization · cookie · password · token · secret · apiKey · api_key
 ```
 
-Extra keys passed via `redact: [...]` are **added** to these defaults.
-
-Depth matters because the commonest shape in an HTTP service hides its secret below the top level:
+Keys match by **name at any depth** (24 levels, the same bound the domain conversion uses); dot-path *targeting* (`"user.password"`) is not interpreted. Unlike the domain conversion, this walk leaves a subtree past its bound **alone** rather than truncating it: masking is a heuristic over a payload the conversion has already made safe, so a key it never reached is unmasked and nothing worse. `err.cause` is traversed too, so a plain object handed to `new BadRequestException(…, { cause })` is covered; `err`'s own `name`/`message`/`stack`/`source`/`layer`/`code` are never touched.
 
 ```typescript
-log.info({ req: { headers: { authorization: "Bearer …" } } }, "request");
-// authorization is redacted — it used to come out in the clear
+createRedactProcessor({ keys: ["customSecret"], maxDepth: 1 });  // top level only
 ```
 
-Keys match by **name at any depth**; dot-path *targeting* (`"user.password"`) is still not interpreted. `err.cause` is traversed too, so a plain object handed to `new BadRequestException(…, { cause })` is covered; `err`'s own `name`/`message`/`stack`/`source`/`layer`/`code` are never touched.
+> **Upgrading from 0.0.3?** This is the breaking change to look at. `createAroma()` used to apply `DEFAULT_REDACT_KEYS` for you; it no longer does, and there is no compile error to catch it if you never passed the `redact` option. The snippet above restores the old behaviour exactly.
+>
+> Because nothing in the type system can reach you, the logger says so itself at startup — once per process, on **stderr** and as one `warn` line on the **log stream**. Two channels because neither alone reaches everyone: stderr works when the logger is not up, and the stream is what an operator actually collects. Silence both when the choice is deliberate:
+>
+> ```typescript
+> createAroma({ acknowledgeNoMasking: true });
+> ```
 
-Pass an object to control the depth:
+### How deep the conversion goes
+
+The domain conversion descends 24 levels into `bindings`, `meta` and `err.cause`. Past that it substitutes a marker rather than letting the subtree through:
+
+```json
+{"meta":{"root":{"nested":{"…":"[truncated: depth]"}}}}
+```
+
+That direction is not negotiable — a subtree the walk did not enter may hold a `beans` object, and handing it back unconverted is exactly the leak the walk exists to prevent. What *is* yours to choose is where the line sits:
 
 ```typescript
-createAroma({ redact: { keys: ["customSecret"], maxDepth: 1 } });  // top level only
+createAroma({ maxDepth: 32 });   // an integer in 1..64
 ```
+
+It is validated at construction, not clamped: a bound you did not get is worse than an error you did. A `child` inherits it.
+
+The same rule covers a payload that is merely enormous rather than deep — the walk enters at most 10.000 objects per event, and substitutes `"[truncated: node budget]"` at the door of the first one past that. Neither guard fires on a log line anyone meant to write.
+
+A DTO carrying its own `toJSON()` is followed rather than read property by property, because `toJSON()` is what the serialiser will emit. If the projection contains nothing of ours, the object comes back **by identity** — a `Date` stays a `Date` for a transport reading the raw event.
+
+### When a processor fails
+
+A processor that throws never reaches your call site. The failure is wrapped in a `ProcessorFailureException` delivered to `onError`, and a diagnostic line naming the processor goes to the transports — run through the pipeline with **only the failing processor removed**, so it cannot take down the report of its own failure while a format processor like `createEcsProcessor` still shapes it.
+
+The event in flight is **discarded**. A processor that failed midway leaves it indeterminate — possibly still holding what a conversion had not finished converting — and forwarding that would turn a processor failure into the leak it exists to prevent. One lost line beats one leaked secret.
+
+A processor that fails on *every* event gets **one diagnostic line per second per failure message**, with the swallowed count on the next one. `onError` still fires every time — it is your telemetry hook, not the log stream.
+
+That diagnostic runs through your pipeline, so your own processors see it. If one of them has side effects — a metric counter, a sampling budget — exclude it:
+
+```typescript
+import { isDiagnostic } from "@roastery/aroma";
+
+const counter: IProcessor = {
+  name: "metrics",
+  process(event) {
+    if (!isDiagnostic(event)) metrics.increment(event.level);
+    return event;
+  },
+};
+```
+
+And a payload that fights back — a getter that throws, a hostile `Proxy` trap — costs the record it was in, never the line and never your call site.
 
 #### The placeholder
 
@@ -404,7 +463,8 @@ import {
 
 // Processors
 import {
-  createRedactProcessor, createEnrichProcessor, createFilterProcessor,
+  createDomainProcessor, createRedactProcessor, DEFAULT_REDACT_KEYS,
+  createEnrichProcessor, createFilterProcessor,
   createSampleProcessor, createEcsProcessor,
 } from "@roastery/aroma/processors";
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CONVERSION_ERROR_KEY } from "@/internal/conversion-failure";
 import { createRedactProcessor } from "@/processors/redact";
 import type { ILogEvent } from "@/types/log-event.interface";
 
@@ -140,5 +141,69 @@ describe("createRedactProcessor — err", () => {
 		});
 
 		expect(proc.process(event)).toBe(event);
+	});
+});
+
+describe("createRedactProcessor — a payload that fights back", () => {
+	// Entering class instances put own enumerable accessors in reach, so the
+	// masking pass degrades the record it could not read instead of throwing and
+	// having the whole event discarded. Each record is guarded on its own, so
+	// one hostile half never costs the other.
+	function hostile(): Record<string, unknown> {
+		const payload: Record<string, unknown> = {};
+		Object.defineProperty(payload, "boom", {
+			enumerable: true,
+			get() {
+				throw new Error("getter exploded");
+			},
+		});
+		return payload;
+	}
+
+	const processor = createRedactProcessor({ keys: ["password"] });
+
+	function event(overrides: Partial<ILogEvent> = {}): ILogEvent {
+		return { level: "info", time: 1700000000000, bindings: {}, ...overrides };
+	}
+
+	test("a hostile meta is replaced, and the message survives", () => {
+		const result = processor.process(
+			event({ meta: hostile(), msg: "request" }),
+		);
+
+		expect(result?.msg).toBe("request");
+		expect(result?.meta?.[CONVERSION_ERROR_KEY]).toContain("getter exploded");
+	});
+
+	test("a hostile bindings does not take meta with it", () => {
+		const result = processor.process(
+			event({ bindings: hostile(), meta: { password: "p", safe: "ok" } }),
+		);
+
+		expect(result?.bindings[CONVERSION_ERROR_KEY]).toContain("getter exploded");
+		expect(result?.meta?.password).toBe("[redacted]");
+		expect(result?.meta?.safe).toBe("ok");
+	});
+
+	test("a hostile err.cause drops the cause and keeps the diagnostic", () => {
+		// `err`'s canonical fields are the whole point of logging an error. A
+		// cause that cannot be walked is dropped; name, message and stack stay.
+		const result = processor.process(
+			event({
+				err: {
+					name: "Bad Request",
+					message: "invalid cart",
+					stack: "Bad Request: invalid cart\n    at …",
+					source: "checkout",
+					layer: "application",
+					cause: hostile(),
+				},
+			}),
+		);
+
+		expect(result?.err?.name).toBe("Bad Request");
+		expect(result?.err?.message).toBe("invalid cart");
+		expect(result?.err?.stack).toContain("Bad Request");
+		expect(result?.err?.cause).toBeUndefined();
 	});
 });

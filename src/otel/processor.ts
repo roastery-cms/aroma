@@ -31,6 +31,8 @@ import type { IProcessor } from "@/types/processor.interface";
  * // Inside an OTel span, log events automatically carry trace_id/span_id.
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link getActiveTraceContext}
  */
 export function createOtelProcessor(): IProcessor {

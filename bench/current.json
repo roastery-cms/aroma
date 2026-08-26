@@ -1,10 +1,10 @@
 {
 	"version": 2,
-	"createdAt": "2026-08-25T16:58:26.955Z",
+	"createdAt": "2026-08-26T11:19:40.104Z",
 	"runtime": {
 		"bun": "1.3.14",
-		"platform": "linux",
-		"arch": "x64"
+		"platform": "darwin",
+		"arch": "arm64"
 	},
 	"cases": [
 		{
@@ -13,160 +13,222 @@
 			"note": "not a target: it contains none of this package, so a change here means the machine got slower, and `compare.ts` divides that out of every other case before deciding whether anything regressed",
 			"iterations": 2000000,
 			"rounds": 9,
-			"nsPerOp": 89.82,
-			"fastestNsPerOp": 86.978,
-			"opsPerSec": 11133433,
-			"spread": 0.033
+			"nsPerOp": 77.032,
+			"fastestNsPerOp": 76.52,
+			"opsPerSec": 12981639,
+			"spread": 0.007
 		},
 		{
 			"id": "dropped",
 			"label": "log.trace() below threshold (NOOP_VOID)",
 			"iterations": 100000000,
 			"rounds": 9,
-			"nsPerOp": 0.147,
-			"fastestNsPerOp": 0.136,
-			"opsPerSec": 6779766735,
-			"spread": 0.081
+			"nsPerOp": 0.144,
+			"fastestNsPerOp": 0.144,
+			"opsPerSec": 6928586642,
+			"spread": 0.004
 		},
 		{
 			"id": "core-msg",
 			"label": "bare Logger, message only",
 			"iterations": 1000000,
 			"rounds": 9,
-			"nsPerOp": 49.001,
-			"fastestNsPerOp": 45.741,
-			"opsPerSec": 20407580,
-			"spread": 0.071
+			"nsPerOp": 28.182,
+			"fastestNsPerOp": 27.956,
+			"opsPerSec": 35483695,
+			"spread": 0.008
 		},
 		{
 			"id": "core-meta",
 			"label": "bare Logger, 4-key meta",
 			"iterations": 1000000,
 			"rounds": 9,
-			"nsPerOp": 56.881,
-			"fastestNsPerOp": 54.048,
-			"opsPerSec": 17580547,
-			"spread": 0.052
+			"nsPerOp": 35.387,
+			"fastestNsPerOp": 35.092,
+			"opsPerSec": 28259165,
+			"spread": 0.008
 		},
 		{
 			"id": "aroma-msg",
 			"label": "createAroma, message only",
 			"iterations": 500000,
 			"rounds": 9,
-			"nsPerOp": 134.586,
-			"fastestNsPerOp": 127.992,
-			"opsPerSec": 7430190,
-			"spread": 0.052
+			"nsPerOp": 65.452,
+			"fastestNsPerOp": 64.652,
+			"opsPerSec": 15278411,
+			"spread": 0.012
 		},
 		{
 			"id": "aroma-meta",
 			"label": "createAroma, 4-key meta (no redact hit)",
 			"iterations": 500000,
 			"rounds": 9,
-			"nsPerOp": 219.868,
-			"fastestNsPerOp": 213.946,
-			"opsPerSec": 4548187,
-			"spread": 0.028
+			"nsPerOp": 117.455,
+			"fastestNsPerOp": 116.656,
+			"opsPerSec": 8513881,
+			"spread": 0.007
 		},
 		{
-			"id": "aroma-redact",
-			"label": "createAroma, meta with two redacted keys",
-			"iterations": 150000,
+			"id": "redact-optin",
+			"label": "createAroma + createRedactProcessor, meta with two masked keys",
+			"iterations": 200000,
 			"rounds": 9,
-			"nsPerOp": 280.497,
-			"fastestNsPerOp": 261.874,
-			"opsPerSec": 3565103,
-			"spread": 0.071
+			"nsPerOp": 248.728,
+			"fastestNsPerOp": 247.502,
+			"opsPerSec": 4020451,
+			"spread": 0.005
 		},
 		{
 			"id": "domain-entity",
 			"label": "meta carrying an Entity (→ toSafeJSON)",
 			"iterations": 150000,
 			"rounds": 9,
-			"nsPerOp": 1107.328,
-			"fastestNsPerOp": 1070.126,
-			"opsPerSec": 903075,
-			"spread": 0.035
+			"nsPerOp": 379.836,
+			"fastestNsPerOp": 376.686,
+			"opsPerSec": 2632712,
+			"spread": 0.008
 		},
 		{
 			"id": "domain-collection",
 			"label": "meta carrying an array of entities (per-item descent)",
 			"iterations": 60000,
 			"rounds": 9,
-			"nsPerOp": 2016.406,
-			"fastestNsPerOp": 1970.837,
-			"opsPerSec": 495932,
-			"spread": 0.023
+			"nsPerOp": 846.084,
+			"fastestNsPerOp": 839.498,
+			"opsPerSec": 1181916,
+			"spread": 0.008
 		},
 		{
 			"id": "domain-vo",
 			"label": "meta carrying a sensitive ValueObject",
 			"iterations": 150000,
 			"rounds": 9,
-			"nsPerOp": 268.568,
-			"fastestNsPerOp": 254.409,
-			"opsPerSec": 3723449,
-			"spread": 0.056
+			"nsPerOp": 141.401,
+			"fastestNsPerOp": 138.877,
+			"opsPerSec": 7072094,
+			"spread": 0.018
 		},
 		{
 			"id": "domain-event",
 			"label": "meta carrying a DomainEvent (→ flattened)",
 			"iterations": 150000,
 			"rounds": 9,
-			"nsPerOp": 370.829,
-			"fastestNsPerOp": 360.593,
-			"opsPerSec": 2696659,
-			"spread": 0.028
+			"nsPerOp": 236.37,
+			"fastestNsPerOp": 233.587,
+			"opsPerSec": 4230650,
+			"spread": 0.012
 		},
 		{
 			"id": "deep-miss",
 			"label": "4-level nested payload, nothing sensitive (lazy clone)",
 			"iterations": 200000,
 			"rounds": 9,
-			"nsPerOp": 597.14,
-			"fastestNsPerOp": 569.936,
-			"opsPerSec": 1674649,
-			"spread": 0.048
+			"nsPerOp": 435.796,
+			"fastestNsPerOp": 434.092,
+			"opsPerSec": 2294650,
+			"spread": 0.004
 		},
 		{
 			"id": "deep-hit",
-			"label": "4-level nested payload with authorization at the bottom",
+			"label": "4-level nested payload, authorization masked at the bottom",
 			"iterations": 150000,
 			"rounds": 9,
-			"nsPerOp": 739.681,
-			"fastestNsPerOp": 692.883,
-			"opsPerSec": 1351935,
-			"spread": 0.068
+			"nsPerOp": 899.511,
+			"fastestNsPerOp": 895.644,
+			"opsPerSec": 1111716,
+			"spread": 0.004
+		},
+		{
+			"id": "deep-domain",
+			"label": "entity below two plain literals (the 0.4.0 leak)",
+			"iterations": 150000,
+			"rounds": 9,
+			"nsPerOp": 628.568,
+			"fastestNsPerOp": 623.533,
+			"opsPerSec": 1590918,
+			"spread": 0.008
+		},
+		{
+			"id": "deep-literals",
+			"label": "8 plain 6-key rows — breadth, not depth",
+			"iterations": 100000,
+			"rounds": 9,
+			"nsPerOp": 961.493,
+			"fastestNsPerOp": 958.557,
+			"opsPerSec": 1040049,
+			"spread": 0.003
+		},
+		{
+			"id": "class-rows",
+			"label": "8 class instances with toJSON() plus a Date — the projection branch",
+			"iterations": 100000,
+			"rounds": 9,
+			"nsPerOp": 1925.238,
+			"fastestNsPerOp": 1920.76,
+			"opsPerSec": 519416,
+			"spread": 0.002
+		},
+		{
+			"id": "deep-clean-16",
+			"label": "16-level nested payload, nothing sensitive — the raised depth bound",
+			"note": "the row that moves if MAX_WALK_DEPTH is worth what it costs",
+			"iterations": 100000,
+			"rounds": 9,
+			"nsPerOp": 1201.573,
+			"fastestNsPerOp": 1196.873,
+			"opsPerSec": 832242,
+			"spread": 0.004
+		},
+		{
+			"id": "dto-rows",
+			"label": "8 plain literals with their own toJSON() — the widened projection",
+			"iterations": 100000,
+			"rounds": 9,
+			"nsPerOp": 1518.543,
+			"fastestNsPerOp": 1514.235,
+			"opsPerSec": 658526,
+			"spread": 0.003
+		},
+		{
+			"id": "wide-rows",
+			"label": "200 plain 6-key rows — the width the node budget guards",
+			"note": "linear in nodes, so this is the row that moves if the walk gets more expensive per node rather than per event",
+			"iterations": 5000,
+			"rounds": 9,
+			"nsPerOp": 18070.567,
+			"fastestNsPerOp": 17948.325,
+			"opsPerSec": 55339,
+			"spread": 0.007
 		},
 		{
 			"id": "error",
 			"label": "log.error() with a CoreException + cause",
 			"iterations": 250000,
 			"rounds": 9,
-			"nsPerOp": 545.294,
-			"fastestNsPerOp": 531.843,
-			"opsPerSec": 1833872,
-			"spread": 0.025
+			"nsPerOp": 119.888,
+			"fastestNsPerOp": 118.189,
+			"opsPerSec": 8341118,
+			"spread": 0.014
 		},
 		{
 			"id": "child",
 			"label": "logger.child({ requestId })",
 			"iterations": 250000,
 			"rounds": 9,
-			"nsPerOp": 277.941,
-			"fastestNsPerOp": 266.312,
-			"opsPerSec": 3597887,
-			"spread": 0.044
+			"nsPerOp": 202.426,
+			"fastestNsPerOp": 201.582,
+			"opsPerSec": 4940085,
+			"spread": 0.004
 		},
 		{
 			"id": "serialize",
 			"label": "serializeEvent() on a canonical event",
 			"iterations": 250000,
 			"rounds": 9,
-			"nsPerOp": 507.31,
-			"fastestNsPerOp": 497.331,
-			"opsPerSec": 1971182,
-			"spread": 0.02
+			"nsPerOp": 443.454,
+			"fastestNsPerOp": 441.621,
+			"opsPerSec": 2255026,
+			"spread": 0.004
 		},
 		{
 			"id": "context",
@@ -174,10 +236,10 @@
 			"note": "importing @/context registers a process-wide context reader that every emit then reads; measuring it in its own process is what keeps that cost off the other cases",
 			"iterations": 150000,
 			"rounds": 9,
-			"nsPerOp": 282.981,
-			"fastestNsPerOp": 261.86,
-			"opsPerSec": 3533804,
-			"spread": 0.081
+			"nsPerOp": 147.827,
+			"fastestNsPerOp": 146.57,
+			"opsPerSec": 6764679,
+			"spread": 0.009
 		}
 	]
 }

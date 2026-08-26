@@ -23,6 +23,8 @@ import type { LogLevel } from "@/types/log-level";
  *   failed") and is the recommended way to disambiguate sinks during
  *   debugging.
  *
+ * @since 0.0.1
+ *
  * @see {@link Logger} — orchestrates the broadcast.
  * @see {@link FastStdioTransport} — the bundled stdio implementation.
  * @see {@link NullTransport} — capture transport for tests.

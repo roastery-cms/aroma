@@ -38,6 +38,8 @@ import type { ITransport } from "@/types/transport.interface";
  * });
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link ITransport} — the contract this class implements.
  * @see {@link safeStringify} — handles cycles before the line hits the stream.
  */

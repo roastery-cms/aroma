@@ -27,6 +27,8 @@
  * logger.info({ userId: 42 }, "user registered");
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link ILogger} — methods are named after each level.
  * @see {@link ILogEvent.level} — where the chosen level lands on the wire.
  * @see {@link LEVEL_NUMERIC} — numeric mapping used for comparisons.
@@ -52,6 +54,8 @@ export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
  * }
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link LogLevel}
  */
 export const LEVEL_NUMERIC = {
@@ -67,6 +71,8 @@ export const LEVEL_NUMERIC = {
  * Union of the numeric severity values in `LEVEL_NUMERIC`. Useful when a
  * custom processor needs to type a pre-computed numeric threshold without
  * loosening to plain `number`.
+ *
+ * @since 0.0.1
  *
  * @see {@link LEVEL_NUMERIC}
  */

@@ -5,6 +5,8 @@ import type { IProcessor } from "@/types/processor.interface";
  * Predicate evaluated against each event to decide whether it passes
  * through the pipeline. Return `true` to keep, `false` to drop.
  *
+ * @since 0.0.1
+ *
  * @see {@link createFilterProcessor}
  */
 export type FilterPredicate = (event: ILogEvent) => boolean;
@@ -31,6 +33,8 @@ export type FilterPredicate = (event: ILogEvent) => boolean;
  *   createFilterProcessor((e) => e.bindings.route !== "/healthz"),
  * ];
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link IProcessor}
  */

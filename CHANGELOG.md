@@ -5,248 +5,209 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-08-25
+## [0.1.0] - 2026-08-26
+
+The first release since `0.0.3`, and everything below is written against it —
+`0.0.3` is the only version any consumer can have installed. Four in-tree
+version bumps (`0.2.0` through `0.5.0`) were staged during this work and never
+reached the registry; they are not releases and are not listed. The record of
+how the work was sequenced lives in `docs/plans/`.
+
+### Changed
+
+- **BREAKING — key-name masking is opt-in.** `0.0.3` applied a built-in key
+  list to every event and offered `redact` to extend or disable it. The list is
+  no longer applied by default, and the `redact` option is gone from
+  `CreateAromaArgs` — all three forms (`redact: [...]`, `redact: false`,
+  `redact: { keys, maxDepth }`) are removed rather than repurposed, so a stale
+  line fails to compile instead of quietly changing meaning. These now reach
+  the log as written:
+
+  ```ts
+  log.info({ password: "hunter2" }, "signup");
+  log.info({ req: { headers: { authorization: "Bearer …" } } }, "request");
+  log.info({ stripe: { token: "tok_…" } }, "charged");
+  ```
+
+  One line restores the old behaviour:
+
+  ```ts
+  import { createRedactProcessor, DEFAULT_REDACT_KEYS } from "@roastery/aroma/processors";
+
+  createAroma({
+    processors: [createRedactProcessor({ keys: [...DEFAULT_REDACT_KEYS] })],
+  });
+  ```
+
+  The reasoning: the domain layer is what knows which of its fields are
+  sensitive, and `toSafeJSON()` acts on that knowledge — see the domain
+  integration below, which is new in this release and covers what the key list
+  was mostly standing in for. A key-name list inside the logger duplicates that
+  imperfectly, fires on fields that are not secrets, and charges every event
+  for the scan. What it *did* cover is everything the domain layer never models
+  — a Node request, a third-party response, a DTO at the edge — and that is now
+  an explicit decision at the call site rather than a default nobody chose.
+
+  Because nothing in the type system reaches someone who never passed `redact`,
+  the logger says so itself at startup: once per process, on stderr **and** as
+  one branded `warn` line on the log stream. Silence it with
+  `acknowledgeNoMasking: true`.
+
+- **BREAKING — `@roastery/terroir` moved from `^0.1.0` to `^0.2.2`**, and
+  `@roastery/beans` (`~0.6.0`) is a new direct dependency. The stack is
+  **terroir → beans → aroma → barista**: aroma sits above beans, so both are
+  ordinary dependencies and the integration uses real types and `instanceof`
+  rather than duck-typing. `beans` is pinned with a tilde rather than a caret
+  because it is pre-1.0 and breaks by design; the behaviours this package
+  relies on are listed in `CLAUDE.md` and each is pinned by a spec.
+
+- **BREAKING — the redaction placeholder comes from `@roastery/beans`.**
+  `redactionConfig()` is read per call and never cached, so a runtime
+  `configureRedaction` applies to loggers already built, and one setting
+  governs both packages — the only way they cannot disagree on a single line.
+  It may be a function, so do not assume the placeholder is a string.
+
+- **BREAKING — a `Map` is normalised to a plain object and a `Set` to an
+  array** wherever either appears in `bindings` or `meta`. Passing them through
+  by identity looked like preservation and was not: `JSON.stringify(new Map())`
+  is `{}`, so a `Map` did not survive serialisation at all, and any masking
+  applied inside it became invisible rather than absent.
+
+- **The transports' level gate is resolved at construction.** An event below
+  the lowest level any transport accepts returns from `emit` before the
+  pipeline runs rather than after. The corollary is a contract: a processor
+  must not change an event's severity. A `Logger` with no transports accepts
+  nothing and therefore runs no processors.
+
+- **`typescript` moved to `devDependencies`** at `5.9.3`, with the peer range
+  widened to `^5 || ^7`. `tsconfig.json` no longer sets `baseUrl`, which
+  TypeScript 7 removed; the `@/*` path alias carries the resolution instead.
+
+### Added
+
+- **Domain-object safety, injected into every `createAroma` pipeline and not
+  removable.** This is the reason for the release. `Entity.toJSON()` and
+  `DomainRecord.toJSON()` are the *persistence* contract — lossless and
+  deliberately unredacted — and `JSON.stringify`, which every transport
+  eventually reaches, calls exactly that. So `log.info({ user }, "created")`
+  wrote a `sensitive` property in the clear, and key-name masking could not
+  help: the top-level key (`user`) is not itself sensitive and the leak sat one
+  level below it. The processor swaps in `toSafeJSON()`, unwraps non-sensitive
+  `ValueObject`s, replaces sensitive ones with the placeholder, and flattens a
+  top-level domain event into `key.*` siblings.
+
+  It reaches **everywhere from every entry point**: under a plain literal,
+  inside an array, a `Map`, a `Set`, an ordinary class instance, behind a
+  `toJSON()` that reads state the walk cannot see, and through `err.cause` and
+  a domain object passed as `meta` itself. Detection is `instanceof` first and
+  structural (`toSafeJSON` / `defineMeta`) second, because two copies of
+  `beans` in one `node_modules` mint two class bases — and a value object whose
+  metadata is unreachable is **redacted, not unwrapped**: "cannot tell" has to
+  resolve to the safe answer.
+
+  There is no switch to turn it off. A logger that converts nothing is
+  `new Logger({ … })`, exported from the root for exactly this kind of control.
+
+- **`createAroma({ maxDepth })`** — how many levels the conversion descends
+  into `bindings`, `meta` and `err.cause`. An integer in `1..64`, default 24,
+  rejected at construction rather than clamped: a bound you did not get is
+  worse than an error you did. A `child` inherits it. Past the bound the walk
+  substitutes `"[truncated: depth]"` rather than passing a subtree through
+  unconverted — a bound here costs visibility, never safety.
+
+- **A bound on width as well as depth.** A walk enters at most 10.000 objects
+  per event and substitutes `"[truncated: node budget]"` at the door of the
+  first one past that. Nesting was bounded and breadth was not.
+
+- **`isDiagnostic(event)`**, exported from the root. The line reporting a
+  processor failure is re-run through the pipeline to keep the stream's format,
+  which means every other processor sees it — a metric counter or a sampling
+  budget would otherwise count the logger's own failure as traffic. Excluding
+  it is a call only that processor's author can make, so this is the hook
+  rather than a default.
+
+- **`ProcessorFailureException`**, exported from the root and from
+  `@roastery/aroma/exceptions`, carrying the failing processor's name.
+
+- **A domain-object overload on every level method** — `log.info(user,
+  "created")` converts before the `{ ...meta }` snapshot, which would otherwise
+  leave the line reading `"meta":{}`.
+
+- **`err.code` for application-layer exceptions.** `terroir` declares it as an
+  abstract canonical member (the HTTP status) rather than a field someone
+  happened to attach, so it is carried; other ad-hoc own-properties still are
+  not.
+
+- **A generative leak sweep** (`src/internal/leak-sweep.spec.ts`): every
+  container shape × every entry point into a log line, every nested pair of
+  shapes, and the whole depth ladder, asserted on each run for both the
+  `[domain]` and `[domain, redact]` pipelines — with a positive control, so a
+  sweep that has stopped being able to fail says so.
+
+- **Benchmark and diagnostic tooling**: `bun run bench:import` (module-graph
+  load cost of the built package), `bun run bench:leak` (heap retention per
+  scenario), and throughput cases covering nesting, width, class instances and
+  the domain conversion.
 
 ### Fixed
 
 - **A processor that throws no longer takes down the caller.** `Logger.emit`
-  ran the pipeline unguarded — the guarantee `CLAUDE.md` states for transports
-  covered only half of it. That was tolerable while every processor was our
-  own trivial synchronous code; it stopped being tolerable when the pipeline
-  began running `@roastery/beans` code (`toSafeJSON`, recursive) and, through
-  the redaction placeholder, **arbitrary consumer code**. A throw is now
-  wrapped in a `ProcessorFailureException` delivered to `onError`, plus a
-  diagnostic line written straight to the transports; the event in flight is
-  **discarded**, because a processor that failed midway leaves it possibly
-  still holding what a redaction step had not finished redacting.
-- **Redaction is no longer top-level only.** `{ req: { headers: {
-  authorization } } }` — the commonest shape in an HTTP service — came out in
-  the clear, and nothing in the domain integration reached it, because a Node
-  request is not a `beans` object. Keys now match by name at any depth (six by
-  default), with a lazy clone at every level so an event carrying nothing
-  sensitive still allocates nothing.
-- **`err.cause` is redacted when it is a plain object.** `new
-  BadRequestException("auth", "failed", { cause: { password } })` wrote it out:
-  neither redact module had ever looked at `err`. `err`'s canonical fields
-  (`name`, `message`, `stack`, `source`, `layer`, `code`) are deliberately left
-  alone — a key list containing `"message"` must not erase the diagnostic.
-- **A cycle no longer carries an unredacted copy out.** Found by the
-  adversarial spec: on meeting a back reference the traversal returned the
-  ancestor object itself, which still held the values being redacted one frame
-  up. It now substitutes `"[Circular]"`, the same sentinel `safeStringify`
-  already used.
+  runs the processor loop under `try`, reports a `ProcessorFailureException`
+  through `onError`, and writes a diagnostic line — re-run through the pipeline
+  with **only the processor that threw removed**, so the culprit cannot take
+  down the report of its own failure while a format processor still shapes it.
+  The event in flight is discarded: a processor that failed midway leaves it
+  indeterminate, and forwarding that would turn a failure into a leak.
 
-### Added
+- **A hostile getter or `Proxy` trap in the payload no longer takes down the
+  log call.** The event is built before the pipeline exists, and both
+  `asMeta` and the `{ ...meta }` snapshot invoke every own enumerable getter.
+  Both reads are now guarded and degrade the affected record rather than the
+  line.
 
-- `ProcessorFailureException`, exported from the root and from
-  `@roastery/aroma/exceptions`, carrying `processorName` and the thrown value
-  as `cause`.
-- **A domain-object overload on every level method.** `log.info(user,
-  "created")` did not compile: `Bindings` is `Record<string, unknown>`, and
-  TypeScript gives an implicit index signature to object literals but not to
-  class instances — so the runtime support for it was reachable only from
-  JavaScript or through a cast. `IDomainLoggable` (exported from
-  `@roastery/aroma/types`) describes it structurally, for the same reason the
-  runtime detection is structural.
-- `redact` accepts `{ keys, maxDepth }`. `maxDepth: 1` restores the previous
-  top-level-only behaviour exactly.
-- `deep-miss` / `deep-hit` throughput cases, and the `maxDepth` default is now
-  backed by a measurement rather than a guess.
+- **A failing processor no longer floods the stream.** One diagnostic line per
+  second per failure message, with the swallowed count carried into the next
+  one; keying on the message as well as the processor is what stops a second,
+  different failure from vanishing inside the first one's window. `onError`
+  still fires every time — it is your telemetry hook, not the log stream.
 
-### Changed
+- **A cycle no longer carries an unredacted copy out through the back
+  reference**, and a self-referential domain event no longer exhausts the
+  stack.
 
-- **BREAKING — more fields are redacted than before.** Any key in the redact
-  list is now masked wherever it appears, not only at the top level. A
-  consumer who depends on seeing a nested field in the clear should pass
-  `redact: { maxDepth: 1 }`. This is a separate breaking change from the
-  placeholder change in 0.2.0 and needs its own look at dashboards and alerts.
-- **The transports' level gate is resolved at construction.** An event no
-  transport would accept now returns from `emit` *before* the pipeline runs
-  rather than after, so a `log.debug({ aggregate })` in a service whose
-  transports are all at `error` no longer pays for a full `toSafeJSON`. The
-  corollary is a new contract, documented on `IProcessor`: **a processor must
-  not change an event's severity.** No bundled processor ever did. A `Logger`
-  built with no transports now runs no processors, since nothing could receive
-  the result.
-- Redaction keys are now built into a `Set` once per processor instead of once
-  per event. The per-event `new Set(…)` cost 248 ns — more than the traversal
-  it was for — and the cycle-detection `WeakSet` is now allocated only on the
-  first real descent, not on every call. Together these took a flat 4-key
-  payload from 1060 ns back to 256 ns.
+- **`err.cause` is converted and masked** when it is a plain object or a domain
+  object. `serializeError` runs inside `emit`, before the pipeline, so this is
+  the one path into a log line a processor never sees — and terroir actively
+  encourages putting the original failure there.
 
-### Tests
+- **`createEcsProcessor` no longer drops `err.code`**, and flattened
+  domain-event keys no longer collide with the reserved ECS `event` namespace.
 
-- `test/reset-beans-redaction.ts` is preloaded, restoring the beans redaction
-  default before every test. `configureRedaction` is module state and the suite
-  runs serially, so a spec that changed it and forgot to restore it did not
-  fail itself — it failed whichever spec ran next, far from the cause.
-- An adversarial pipeline spec covering the five ways to break it: a throwing
-  processor, `authorization` four levels down, a plain `err.cause` holding a
-  password, a cycle, and a `log.debug` no transport accepts.
-- A type-level spec exercising all four level-method overloads, so one placed
-  in the wrong order — or degraded to `any` — fails `tsc` instead of failing
-  silently.
+- **`AromaException` forwards `cause` through the native `ErrorOptions` slot**,
+  so it survives serialisation like any other exception's.
 
-## [0.3.0] - 2026-08-25
+### Performance
 
-### Fixed
+- The default pipeline is substantially faster than the `0.0.3` shape despite
+  doing more: a flat payload and an event carrying an `Entity` both improved,
+  because the built-in key scan no longer runs on every event and the single
+  shared traversal returns the original by identity when nothing matched.
+- **One traversal**, not two. Domain conversion and key-name masking are the
+  same walk over the same payload with a different decision per node, so there
+  is one depth bound, one set of descent rules and one cycle guard — which is
+  also why they cannot drift apart and open a gap between them again.
+- Dropped-level calls are bound to a shared no-op at construction: zero
+  allocation, no event ever built.
+- Benchmarks run one child process per case, because `Logger.emit` and
+  `ITransport.write` are single call sites and measuring cases side by side
+  degrades their inline caches. The regression gate widens the 5% threshold to
+  each case's measured noise band and re-measures a suspect before failing.
 
-- **Three more routes a `sensitive` field could take out of the process.**
-  0.2.0 closed `log.info({ user }, "…")` and left three call shapes just as
-  common open. All four are now covered by an adversarial spec that tries each
-  door in turn:
-  - **`err.cause`.** `serializeError` runs inside `Logger.emit`, *before* the
-    processor pipeline, so the domain processor never saw that branch — while
-    terroir's own TSDoc encourages translating a low-level failure by passing
-    the original as `cause`. `new BadRequestException("checkout", "…", { cause:
-    user })` wrote the password out. The error serialiser now converts it,
-    recursively.
-  - **Inside a collection.** `{ users: [alice, bob] }` matched no `instanceof`
-    and carried no `toSafeJSON`, so it came back by identity and
-    `JSON.stringify` called each item's lossless `toJSON()`. The converter now
-    descends into `Array`, `Map` and `Set`. This is not deep redaction of plain
-    objects — a nested literal is still left alone; a collection is simply how
-    call sites carry domain objects.
-  - **An instance from a second copy of `@roastery/beans`.** Two copies in one
-    `node_modules` mint two class bases, so `instanceof` fails while the object
-    is an entity in every way that matters — detection failed with no type
-    error and no exception. Detection now also matches structurally
-    (`toSafeJSON`, and `defineMeta` for value objects, the same discriminant
-    beans uses internally). A value object whose `[Meta]` is unreachable is
-    **redacted rather than unwrapped**: "cannot tell" resolves to the safe
-    answer.
-- **`log.info(user, "created")` no longer silently empties the entry.** Passing
-  a domain object as `meta` itself was not a leak but a disappearance: `emit`
-  spreads `meta`, a spread copies symbol keys, an entity keeps its state under
-  `[Context]`/`[Properties]`/`[Source]`, and `JSON.stringify` drops symbols —
-  so the line read `"meta":{}`. The object is now converted **before** the
-  spread, where it is still recognisable. Plain literals pay one
-  `getPrototypeOf` for the check.
-- **`err.code` survives the ECS mapping.** `createEcsProcessor` mapped only
-  `name`/`message`/`stack`, dropping the status code in the one format where it
-  is most useful. It now emits `error.code` (a string, per ECS) and, on the
-  application layer, `http.response.status_code` (a number) — the field HTTP
-  dashboards actually query.
-- **Flattened domain-event keys no longer collide with the ECS `event`
-  namespace.** The ECS processor spreads `meta` at the document root, so
-  `"order.name"` reached Elasticsearch as a dotted path, expanded into an
-  `event` object, and collided with the reserved ECS meanings of
-  `event.action` / `event.id` / `event.created` — producing a document that
-  looked like ECS and was not. Those keys are now translated to their real ECS
-  fields, with `event.kind` and an `event.dataset` from the prefix; any
-  `<k>.payload` stays outside the namespace.
+## [0.0.3] - 2026-06-16
 
-### Changed
-
-- `@roastery/beans` is pinned with a tilde (`~0.6.0`). It is pre-1.0 and breaks
-  by design, and this package now depends on several of its behaviours; a minor
-  should not arrive on its own. The assumed contracts are tabulated in
-  `CLAUDE.md`, each with the spec that pins it.
-- `typescript` moved to `devDependencies` at `5.9.3`, and the peer range
-  widened from the exact `7.0.2` to `^5 || ^7`. TypeScript 7 is the native port
-  and exposes no `ts.sys`, which tsup's declaration bundler reads — the package
-  could not build a `.d.ts` under the version its own peer range demanded.
-
-### Added
-
-- Collections (`Array`, `Map`, `Set`) are converted item by item. A `Map`
-  becomes a plain object and a `Set` an array rather than coming back by
-  identity, because `JSON.stringify` renders both as `{}` — for those two,
-  identity does not preserve the entry, it erases it.
-- `bun run bench:import` reports the module-graph load cost of the built
-  package, and a `domain-collection` throughput case covers the new per-item
-  descent.
-
-### Docs
-
-- `CreateAromaArgs.redact` and the README record what `redact: false` costs:
-  serialise domain objects at the call site, and note that a live instance
-  cannot cross a `WorkerTransport` boundary (structured clone keeps only own
-  enumerable string keys, and an entity keeps its state under symbols, so it
-  arrives as `{}`). Pinned by a spec so it stays a documented choice rather
-  than a bug waiting to be filed.
-
-## [0.2.0] - 2026-08-25
-
-### Added
-
-- **Domain processor — `@roastery/beans` objects are made safe before they are
-  serialised.** `createDomainProcessor()` sweeps the top level of `bindings` /
-  `meta` and swaps every domain object for its loggable form: an `Entity` /
-  `DomainRecord` / multiplicity wrapper becomes `toSafeJSON()`, a `Command`
-  becomes `toJSON()` (which `beans` already redacts), a `ValueObject` is
-  unwrapped to its raw `.value` — or replaced by the redaction placeholder when
-  its class declares `sensitive: true` — and a domain event is flattened into
-  prefixed sibling keys (`event.name`, `event.aggregateId`, `event.occurredAt`,
-  `event.payload`). `createAroma` injects it automatically **ahead of** the
-  redact processor, so the final pipeline is `[domain, redact, ...processors]`.
-  `redact: false` opts out of both. Exported from `@roastery/aroma/processors`.
-- **`err.code` is now emitted for application-layer exceptions.** `terroir`
-  0.2.x declares `code` as an abstract, canonical member of
-  `ApplicationException` — every one of its concrete classes has one — so
-  carrying it preserves the hierarchy rather than promoting an ad-hoc
-  own-property (which 0.0.2 deliberately excluded, and still does). Absent for
-  the domain, infra and internal layers, which are transport-agnostic by
-  design. Serialised recursively, so an application-layer `cause` carries its
-  status too.
-- **`@roastery/beans` is a direct dependency.** The stack is
-  terroir → beans → aroma → barista: the logger sits *above* beans, so the
-  integration is by real types and `instanceof`, not duck-typing.
-
-### Changed
-
-- **BREAKING — the redaction placeholder now comes from `@roastery/beans`.**
-  `redactShallow` no longer hard-codes a sentinel; it reads
-  `redactionConfig().placeholder` per call. The default output therefore
-  changes from `"[REDACTED]"` to `"[redacted]"`, and a single
-  `configureRedaction({ placeholder })` at startup now governs the logger and
-  the domain layer together — they can no longer disagree on the same log line.
-  **Alerts, dashboards and log queries that match the literal string need
-  updating.** A **function** placeholder is now supported as well
-  (`(value, { name, source }) => unknown`, for partial masking such as
-  `a***@b.dev`): where the logger masks by key name it passes
-  `{ name: <the key>, source: "@roastery/aroma" }`; where it redacts a
-  sensitive `ValueObject` it passes the VO's own `[Context]`, whose `source` is
-  the owning aggregate.
-- `AromaException` now forwards `cause` through the native `ErrorOptions` slot
-  that every `terroir` 0.2.x exception accepts, instead of assigning
-  `this.cause` after `super()` — the slot is populated during construction.
-
-### Fixed
-
-- **A `sensitive` domain property could be logged in the clear.**
-  `Entity.toJSON()` and `DomainRecord.toJSON()` are the persistence contract:
-  lossless and deliberately unredacted. `JSON.stringify` — which the serialiser,
-  `safeStringify` and `ConsoleTransport` all reach — calls exactly that, so
-  `log.info({ user }, "created")` wrote the password out. The redact processor
-  could not catch it: it is shallow, and the top-level key (`user`) is not
-  itself sensitive — the leak sat one level below. A bare `ValueObject` had the
-  same problem from the other side, serialising as `{"value":"…"}` because
-  `value` is a public enumerable field and the class has no `toJSON`. Both are
-  closed by the domain processor.
-- Migrated to the `terroir` 0.2.x symbol layout: `ExceptionLayer` (from the
-  removed `@roastery/terroir/exceptions/symbols` subpath) is now `Layer` from
-  `@roastery/terroir/symbols`. The package did not typecheck against 0.2.2
-  before this.
-- `tsconfig.json` no longer sets `baseUrl`, which TypeScript 7 removed; the
-  `@/*` alias is now a tsconfig-relative path.
-
-### Tests
-
-- New `domain-safe` specs covering every detection branch against **real**
-  `beans` instances rather than doubles, including the runtime-minted
-  `arrayOf` wrapper (which has no exported class to match on, only the
-  `toSafeJSON` contract) and a `redactWith` function placeholder.
-- New end-to-end leak regression: a real `Entity` with a `sensitive` property,
-  logged through `createAroma`, asserted absent from the serialised line — plus
-  a spec pinning the *premise*, that `Entity.toJSON()` does **not** redact, so
-  the day `beans` closes the gap itself the processor is flagged rather than
-  quietly becoming dead code.
-- New `serializeError` spec covering `code` presence per layer, and new
-  `redactShallow` specs covering `configureRedaction` in both its value and
-  function forms.
-
-## [0.0.2] - 2026-06-16
+> Numbered `0.0.2` until this release. The registry has `0.0.1` and `0.0.3` and
+> never had a `0.0.2`; comparing the two published tarballs puts the error
+> normalisation below in `0.0.3`, so that is what this block is.
 
 ### Changed
 

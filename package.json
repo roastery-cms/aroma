@@ -1,6 +1,6 @@
 {
 	"name": "@roastery/aroma",
-	"version": "0.4.0",
+	"version": "0.1.0",
 	"author": {
 		"name": "Alan Reis",
 		"email": "alanreisanjo@gmail.com",
@@ -47,7 +47,7 @@
 			"require": "./dist/*/index.cjs"
 		}
 	},
-	"description": "Structured, transport-based logger for the Roastery CMS ecosystem \u2014 pino-style API, pluggable transports & processors, redaction by default, and optional OpenTelemetry correlation.",
+	"description": "Structured, transport-based logger for the Roastery CMS ecosystem \u2014 pino-style API, pluggable transports & processors, domain-object safety by default, and optional OpenTelemetry correlation.",
 	"files": [
 		"dist"
 	],

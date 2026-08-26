@@ -109,7 +109,7 @@ const fileLog = createAroma({ transports: [fileTransport] });
 const scenarios: Scenario[] = [
 	{
 		id: "pipeline",
-		label: "createAroma → [domain, redact] → discard",
+		label: "createAroma → [domain] → discard",
 		run: (count) => {
 			for (let index = 0; index < count; index++) {
 				log.info(META, "checkout completed");

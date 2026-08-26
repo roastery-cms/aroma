@@ -3,6 +3,8 @@
  * Mirrors the W3C Trace Context fields that aggregators correlate logs
  * with traces by.
  *
+ * @since 0.0.1
+ *
  * @see {@link getActiveTraceContext}
  */
 export type ActiveTraceContext = {
@@ -61,6 +63,8 @@ async function loadOtel(): Promise<OtelApi | null> {
  * console.log(ctx?.traceId);                  // "abcd..." or undefined
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link primeOtel}
  * @see {@link createOtelProcessor}
  */
@@ -85,6 +89,8 @@ export function getActiveTraceContext(): ActiveTraceContext | undefined {
  * and subsequent `getActiveTraceContext()` calls return `undefined`.
  *
  * @returns `true` when the API was loaded, `false` otherwise.
+ *
+ * @since 0.0.1
  */
 export async function primeOtel(): Promise<boolean> {
 	const api = await loadOtel();

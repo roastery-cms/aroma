@@ -21,7 +21,7 @@ import { ValueObject } from "@roastery/beans/domain/value-object";
 import type { IValueObjectMetadata } from "@roastery/beans/domain/value-object/types";
 import { arrayOf } from "@roastery/beans/domain/wrapper/helpers";
 import { Meta } from "@roastery/terroir/symbols";
-import { domainSafeShallow, domainSafeValue } from "@/internal/domain-safe";
+import { domainSafeDeep, domainSafeValue } from "@/internal/domain-safe";
 
 const CONTEXT = { name: "password", source: "user" };
 const PASSWORD = "Sup3rS3cret!";
@@ -219,7 +219,7 @@ describe("domainSafeValue", () => {
 	});
 });
 
-describe("domainSafeShallow", () => {
+describe("domainSafeDeep", () => {
 	test("returns the record by identity when it holds no domain object", () => {
 		const record: Record<string, unknown> = {
 			userId: 42,
@@ -227,11 +227,11 @@ describe("domainSafeShallow", () => {
 			nested: { ok: true },
 		};
 
-		expect(domainSafeShallow(record)).toBe(record);
+		expect(domainSafeDeep(record)).toBe(record);
 	});
 
 	test("passes undefined through", () => {
-		expect(domainSafeShallow(undefined)).toBeUndefined();
+		expect(domainSafeDeep(undefined)).toBeUndefined();
 	});
 
 	test("converts matching keys and leaves the rest untouched", () => {
@@ -241,7 +241,7 @@ describe("domainSafeShallow", () => {
 			nested,
 			password: new PasswordVO(PASSWORD, CONTEXT),
 		};
-		const result = domainSafeShallow(record);
+		const result = domainSafeDeep(record);
 
 		expect(result).toEqual({
 			requestId: "abc",
@@ -255,14 +255,14 @@ describe("domainSafeShallow", () => {
 		const user = makeUser();
 		const record: Record<string, unknown> = { user };
 
-		domainSafeShallow(record);
+		domainSafeDeep(record);
 
 		expect(record.user).toBe(user);
 	});
 
 	test("flattens a domain event into prefixed sibling keys", () => {
 		const event = new OrderConfirmed("01J-order");
-		const result = domainSafeShallow({ event, requestId: "abc" } as Record<
+		const result = domainSafeDeep({ event, requestId: "abc" } as Record<
 			string,
 			unknown
 		>);
@@ -277,7 +277,7 @@ describe("domainSafeShallow", () => {
 	});
 
 	test("keeps an event payload under the prefixed key when present", () => {
-		const result = domainSafeShallow({
+		const result = domainSafeDeep({
 			event: {
 				name: "order.confirmed",
 				occurredAt: "2026-08-25T13:04:11.000Z",
@@ -291,7 +291,7 @@ describe("domainSafeShallow", () => {
 
 	test("does not mistake an entity for an event", () => {
 		const user = makeUser();
-		const result = domainSafeShallow({ user } as Record<string, unknown>);
+		const result = domainSafeDeep({ user } as Record<string, unknown>);
 
 		expect(Object.keys(result)).toEqual(["user"]);
 	});
@@ -394,6 +394,82 @@ describe("collections", () => {
 		}
 
 		expect(() => domainSafeValue(nested, "deep")).not.toThrow();
+	});
+});
+
+describe("a conversion's output is terminal", () => {
+	test("beans' toSafeJSON() returns plain values — the premise for not re-walking", () => {
+		// The walk stops at whatever the visitor produced: recursion inside a
+		// domain object is beans' own job, re-walking would double the cost of
+		// the most expensive path, and a `toSafeJSON` returning a live instance
+		// would open a re-entrancy this code does not guard. That is an
+		// assumption, so it is pinned rather than left implicit — if beans ever
+		// returns a live value object here, this fails instead of leaking.
+		const safe = makeUser().toSafeJSON() as unknown as Record<string, unknown>;
+
+		for (const value of Object.values(safe)) {
+			expect(typeof value).not.toBe("object");
+		}
+		expect(safe.password).toBe("[redacted]");
+	});
+
+	test("what a toSafeJSON produces is not visited again", () => {
+		// A foreign object whose `toSafeJSON` hands back a nested literal: the
+		// walk takes it at its word and does not descend into it.
+		const inner = { deep: { kept: true } };
+		const bearer = { toSafeJSON: () => inner };
+
+		const result = domainSafeDeep({ bearer }) as Record<string, unknown>;
+
+		expect(result.bearer).toBe(inner);
+	});
+});
+
+describe("values the conversion deliberately does not touch", () => {
+	test("a Date and a foreign class instance pass through by identity", () => {
+		// `descendable` refuses a prototype it does not recognise, and the
+		// visitor claims nothing here — so the walk hands both back untouched
+		// rather than rummaging through internals that are none of a logger's
+		// business.
+		class Connection {
+			public readonly host = "db-1";
+		}
+		const when = new Date(0);
+		const connection = new Connection();
+
+		const result = domainSafeDeep({ when, connection });
+
+		expect(result.when).toBe(when);
+		expect(result.connection).toBe(connection);
+	});
+});
+
+describe("an event that is its own payload", () => {
+	test("terminates instead of exhausting the stack", () => {
+		// `raiseEvent` resolves a payload from the event's declaration, so this
+		// cannot arise from beans itself — but an event assembled by hand can
+		// hold anything, and an unbounded recursion here would blow the stack
+		// *inside the caller's log.info()*. The walk's own cycle guard does not
+		// cover it: an event is claimed by the visitor and never descended into.
+		const event: Record<string, unknown> = {
+			name: "order.confirmed",
+			aggregateId: "01J-order",
+			occurredAt: new Date(0).toISOString(),
+		};
+		event.payload = event;
+
+		let result: Record<string, unknown> = {};
+		expect(() => {
+			result = domainSafeDeep({ event }) as Record<string, unknown>;
+		}).not.toThrow();
+
+		expect(result["event.name"]).toBe("order.confirmed");
+		expect(result["event.payload"]).toEqual({
+			name: "order.confirmed",
+			aggregateId: "01J-order",
+			occurredAt: new Date(0).toISOString(),
+			payload: "[Circular]",
+		});
 	});
 });
 

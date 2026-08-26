@@ -61,6 +61,8 @@ import type { IProcessor } from "@/types/processor.interface";
  * });
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link IProcessor}
  */
 export function createEcsProcessor(): IProcessor {

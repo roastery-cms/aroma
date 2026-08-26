@@ -15,6 +15,8 @@
  *    (e.g. forbid functions, accept only JSON-serialisable values) we can
  *    tighten `Bindings` once and ripple it through the package.
  *
+ * @since 0.0.1
+ *
  * @see {@link ILogEvent.bindings}
  * @see {@link ILogger.child}
  */

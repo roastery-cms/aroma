@@ -41,6 +41,8 @@ import type { ILogEvent } from "@/types/log-event.interface";
  * - Processors are invoked **synchronously**. Async work (e.g., remote
  *   sampling decisions) does not belong here; put it inside a transport.
  *
+ * @since 0.0.1
+ *
  * @see {@link createRedactProcessor}
  * @see {@link createEnrichProcessor}
  * @see {@link createFilterProcessor}

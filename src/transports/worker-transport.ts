@@ -7,6 +7,8 @@ import type { ITransport } from "@/types/transport.interface";
 /**
  * Options accepted by `WorkerTransport`.
  *
+ * @since 0.0.1
+ *
  * @see {@link WorkerTransport}
  */
 export type WorkerTransportOptions = {
@@ -56,6 +58,8 @@ export type WorkerTransportOptions = {
  *   onError: (err) => console.error("worker err:", err),
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link ITransport}
  */

@@ -31,6 +31,8 @@ import type { ITransport } from "@/types/transport.interface";
  * expect(sink.events[0]?.meta).toEqual({ userId: 42 });
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link ITransport}
  */
 export class NullTransport implements ITransport {

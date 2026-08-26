@@ -3,6 +3,8 @@ import { InfraException } from "@roastery/terroir/exceptions/models";
 /**
  * Construction options accepted by `AromaException` and its subclasses.
  *
+ * @since 0.0.1
+ *
  * @see {@link AromaException}
  */
 export type AromaExceptionOptions = {
@@ -39,6 +41,8 @@ export type AromaExceptionOptions = {
  *   },
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link InfraException}
  * @see {@link LoggerOptions.onError}
@@ -81,6 +85,8 @@ export class AromaException extends InfraException {
  *   },
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link AromaException}
  */
@@ -132,6 +138,8 @@ export class BackpressureDropException extends AromaException {
  *   },
  * });
  * ```
+ *
+ * @since 0.1.0
  *
  * @see {@link AromaException}
  * @see {@link IProcessor} — the contract whose failure this reports.

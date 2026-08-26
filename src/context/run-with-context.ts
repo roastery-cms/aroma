@@ -31,6 +31,8 @@ import type { Bindings } from "@/types/bindings";
  * });
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link getContext}
  */
 export function runWithContext<R>(bindings: Bindings, fn: () => R): R {

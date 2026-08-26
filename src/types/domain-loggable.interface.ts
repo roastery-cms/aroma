@@ -22,6 +22,8 @@
  * redacted serialisation every entity, record and multiplicity wrapper
  * provides, and the shape of a domain event.
  *
+ * @since 0.1.0
+ *
  * @see {@link ILogger.info} — where the overload lives.
  * @see `domainSafeValue` in `@/internal/domain-safe` — what accepts these at runtime.
  */

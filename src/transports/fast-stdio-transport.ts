@@ -11,6 +11,8 @@ import type { ITransport } from "@/types/transport.interface";
 /**
  * Options accepted by `FastStdioTransport`.
  *
+ * @since 0.0.1
+ *
  * @see {@link FastStdioTransport}
  */
 export type FastStdioTransportOptions = {
@@ -66,6 +68,8 @@ export type FastStdioTransportOptions = {
  *   onDrop: (err) => metrics.increment("logger.drops", { total: err.dropCount }),
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link ITransport}
  * @see {@link BufferedWriter}

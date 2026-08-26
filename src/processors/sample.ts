@@ -7,6 +7,8 @@ import type { IProcessor } from "@/types/processor.interface";
  * keeps 1% of events at that level. Levels absent from the map are **not
  * sampled** (kept 100%).
  *
+ * @since 0.0.1
+ *
  * @see {@link createSampleProcessor}
  */
 export type SampleRates = Partial<Record<LogLevel, number>>;
@@ -32,6 +34,8 @@ export type SampleRates = Partial<Record<LogLevel, number>>;
  *   // info/warn/error/fatal kept 100%
  * ];
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link IProcessor}
  */

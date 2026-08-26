@@ -7,6 +7,16 @@ import { ValueObject } from "@roastery/beans/domain/value-object";
 import type { IValueObjectContext } from "@roastery/beans/domain/value-object/types";
 import { Context, Meta } from "@roastery/terroir/symbols";
 import { AROMA_SOURCE, redactedValue } from "@/internal/redacted-value";
+import {
+	createWalkPlan,
+	MAX_WALK_DEPTH,
+	PASS,
+	SpreadFields,
+	type Visitor,
+	type WalkPlan,
+	walkRecord,
+	walkValue,
+} from "@/internal/safe-walk";
 
 /** Minimal view of the `[Meta]` slot every `ValueObject` instance carries. */
 type ValueObjectMeta = {
@@ -18,88 +28,79 @@ type ValueObjectMeta = {
 type SafeJsonBearing = { toSafeJSON: () => unknown };
 
 /**
- * Convert a single value to the form that is safe to log, leaving anything
- * that is not a `@roastery/beans` domain object untouched **by identity**.
+ * Decide what a single value becomes on its way to a log line, leaving
+ * anything that is not a `@roastery/beans` domain object to the walk.
  *
- * Detection runs in this order, and the order is load-bearing:
+ * Detection is a two-tier ladder. A value whose prototype is `Object.prototype`
+ * cannot be an instance of any `beans` class, so it skips the seven
+ * `instanceof` checks — which matters because a plain literal is most of what a
+ * deep walk meets, and the walk now runs on nested payloads that never reached
+ * this code before.
+ *
+ * The full ladder, for a value with a prototype of its own:
  *
  * | Detection | Action |
  * |---|---|
+ * | `Array` / `Map` / `Set` | {@link PASS} — the walk descends |
  * | a `ValueObject` — by `instanceof` **or** by carrying `defineMeta` | sensitive → placeholder; otherwise the unwrapped `.value` |
  * | `instanceof Entity` / `DomainRecord` | `toSafeJSON()` |
  * | `instanceof Command` | `toJSON()` — already redacted by `beans` |
- * | `Array` / `Map` / `Set` | converted item by item |
- * | `instanceof DomainEvent` or the `IDomainEvent` shape | plain `{ name, occurredAt, aggregateId, payload? }` |
+ * | `instanceof DomainEvent` or the `IDomainEvent` shape | {@link SpreadFields} |
  * | `typeof value.toSafeJSON === "function"` | `toSafeJSON()` |
- * | none of the above | the value itself |
+ * | none of the above | {@link PASS} |
  *
  * @remarks
- * The last branch is **not** leftover duck-typing. `arrayOf` / `optionalOf` /
- * `nullableOf` mint **anonymous classes at runtime**, so there is no exported
- * class to test `instanceof` against; the contract they do guarantee is
- * `toSafeJSON`, and that is what the branch catches. It runs last so it only
- * ever sees what the named classes did not claim.
+ * The `toSafeJSON` branch is **not** leftover duck-typing. `arrayOf` /
+ * `optionalOf` / `nullableOf` mint **anonymous classes at runtime**, so there
+ * is no exported class to test `instanceof` against; the contract they do
+ * guarantee is `toSafeJSON`, and that is what the branch catches. It runs last
+ * so it only ever sees what the named classes did not claim.
  *
  * Unwrapping a non-sensitive `ValueObject` is a deliberate side benefit:
  * `{ email: emailVO }` logs as `{ email: "a@b.c" }` rather than
  * `{ email: { value: "a@b.c" } }`.
  *
- * **Collections are descended into**, because a collection is how a call site
- * transports domain objects: `{ users: [alice, bob] }` is at least as common
- * as `{ user: alice }`, and a raw array matches no `instanceof` and carries no
- * `toSafeJSON`, so it would come back by identity and `JSON.stringify` would
- * call each item's lossless `toJSON()`. That is *not* a move towards deep
- * redaction of plain objects — a plain literal is still left alone, and dot
- * paths remain the additive extension they always were.
- *
- * Recursion is otherwise the domain object's own job: an `Entity`'s
- * `toSafeJSON()` already recurses, so this function never walks into a plain
- * object literal. Nesting through collections is bounded by
- * {@link MAX_DEPTH} so a self-referential array cannot exhaust the stack
- * inside a log call.
- *
- * @param value - any value; primitives and `null` return immediately.
- * @param key - the key the value was found under, used as the `name` of the
- *   fallback redaction context when a `ValueObject` carries no `[Context]`.
- * @returns the safe form, or `value` itself when nothing matched.
- *
- * @example
- * ```ts
- * domainSafeValue(new PasswordVO("hunter2", ctx), "password"); // → "[redacted]"
- * domainSafeValue(new EmailVO("a@b.c", ctx), "email");         // → "a@b.c"
- * domainSafeValue(user, "user");                               // → user.toSafeJSON()
- * ```
- *
- * @see {@link domainSafeShallow} — the top-level sweep that calls this.
- *
- * @internal
+ * Everything this returns is **terminal** — the walk does not descend into a
+ * conversion's output. Recursion inside a domain object is `toSafeJSON`'s own
+ * job, and it already does it; descending again would only risk converting
+ * something twice. The one exception is a {@link SpreadFields}' `payload`,
+ * which {@link domainEventFields} converts itself.
  */
-export function domainSafeValue(value: unknown, key: string): unknown {
-	return convert(value, key, 0);
-}
+const visitDomain: Visitor = (value: unknown, key: string): unknown => {
+	// The plan sets `primitives: false`, so `value` is a non-null object.
+	const prototype = Object.getPrototypeOf(value as object);
 
-/**
- * How deep {@link domainSafeValue} follows nested collections.
- *
- * A bound is required, not tidy: `const rows = []; rows.push(rows)` is legal,
- * and unbounded recursion here would blow the stack **inside the caller's
- * `log.info()`** — a logger that crashes the request it was describing. Eight
- * levels is far past any real log payload; beyond it, values come back
- * untouched and `serializeEvent` handles the cycle as it always has, by
- * falling back to `safeStringify`.
- *
- * @internal
- */
-const MAX_DEPTH = 8;
+	if (prototype === Object.prototype || prototype === null) {
+		// Cheap, but **not** a free pass, and writing it as one would silently
+		// delete two live branches:
+		//
+		// - a domain object that crossed a copy boundary or a serialisation and
+		//   arrived as a plain bag still carrying `toSafeJSON`. Detection failing
+		//   here produces no type error and no exception — just the leak back.
+		// - a hand-raised domain event. `Entity.raiseEvent` accepts any
+		//   `{ name, ...payload }` and the buffer stores plain objects, so a
+		//   `{ name, occurredAt, aggregateId }` literal is production shape, not
+		//   a test artefact.
+		//
+		// A genuine `ValueObject` cannot reach here — its prototype is its class's
+		// — so `defineMeta` is not worth a third load on this path.
+		if (typeof (value as SafeJsonBearing).toSafeJSON === "function") {
+			return (value as SafeJsonBearing).toSafeJSON();
+		}
 
-/** {@link domainSafeValue}'s body, carrying the collection nesting depth. */
-function convert(value: unknown, key: string, depth: number): unknown {
-	if (typeof value !== "object" || value === null) {
-		return value;
+		if (hasEventShape(value as object)) {
+			return new SpreadFields(domainEventFields(value as IDomainEvent));
+		}
+
+		return PASS;
 	}
 
-	if (isValueObject(value)) {
-		return fromValueObject(value, key);
+	if (Array.isArray(value) || value instanceof Map || value instanceof Set) {
+		return PASS;
+	}
+
+	if (isValueObject(value as object)) {
+		return fromValueObject(value as object, key);
 	}
 
 	if (value instanceof Entity || value instanceof DomainRecord) {
@@ -110,27 +111,116 @@ function convert(value: unknown, key: string, depth: number): unknown {
 		return value.toJSON();
 	}
 
-	if (Array.isArray(value)) {
-		return fromArray(value, key, depth);
-	}
-
-	if (value instanceof Map) {
-		return fromMap(value, depth);
-	}
-
-	if (value instanceof Set) {
-		return fromSet(value, key, depth);
-	}
-
-	if (isDomainEvent(value)) {
-		return domainEventFields(value, depth);
+	if (isDomainEvent(value as object)) {
+		return new SpreadFields(domainEventFields(value as IDomainEvent));
 	}
 
 	if (typeof (value as SafeJsonBearing).toSafeJSON === "function") {
 		return (value as SafeJsonBearing).toSafeJSON();
 	}
 
-	return value;
+	// A `Date`, an `Error`, a database handle: not ours, and `descendable`
+	// refuses to look inside it either.
+	return PASS;
+};
+
+/**
+ * The one plan for domain conversion, built at module load.
+ *
+ * `primitives: false` because a primitive can never be a domain object, which
+ * saves an indirect call per primitive key — on a flat payload, every key
+ * there is.
+ */
+const DOMAIN_PLAN = createWalkPlan(visitDomain, false);
+
+/**
+ * Build a domain plan with a non-default depth bound.
+ *
+ * @remarks
+ * Returns the shared {@link DOMAIN_PLAN} when the bound is the default one, so
+ * the overwhelmingly common case keeps a single plan object and the walk's
+ * recursion keeps a single hidden class. A logger that overrides `maxDepth`
+ * pays for one more.
+ *
+ * @param maxDepth - levels to descend.
+ *
+ * @internal
+ */
+export function createDomainPlan(maxDepth: number): WalkPlan {
+	return maxDepth === MAX_WALK_DEPTH
+		? DOMAIN_PLAN
+		: createWalkPlan(visitDomain, false, maxDepth);
+}
+
+/**
+ * Convert a single value to the form that is safe to log, leaving anything
+ * that is not a `@roastery/beans` domain object untouched **by identity**.
+ *
+ * @param value - any value; primitives and `null` return immediately.
+ * @param key - the key the value was found under, used as the `name` of the
+ *   fallback redaction context when a `ValueObject` carries no `[Context]`.
+ * @param plan - depth-bounded plan to walk with. Defaults to the shared one.
+ * @returns the safe form, or `value` itself when nothing matched.
+ *
+ * @example
+ * ```ts
+ * domainSafeValue(new PasswordVO("hunter2", ctx), "password"); // → "[redacted]"
+ * domainSafeValue(new EmailVO("a@b.c", ctx), "email");         // → "a@b.c"
+ * domainSafeValue(user, "user");                               // → user.toSafeJSON()
+ * ```
+ *
+ * @see {@link domainSafeDeep} — the record sweep that shares this decision.
+ *
+ * @internal
+ */
+export function domainSafeValue(
+	value: unknown,
+	key: string,
+	plan: WalkPlan = DOMAIN_PLAN,
+): unknown {
+	return walkValue(value, key, plan);
+}
+
+/**
+ * Sweep a `bindings` / `meta` record, replacing every domain object with its
+ * safe form and flattening a top-level domain event into prefixed sibling
+ * keys.
+ *
+ * **Depth matters here, and used not to.** An earlier draft swept only the top
+ * level, on the reasoning that key-name redaction was shallow too. Redaction
+ * then went deep and this did not, and an `Entity` below a plain literal fell
+ * between the two — redaction refuses to enter a class instance, this never
+ * reached one — so `{ ctx: { user } }` was serialised through the entity's
+ * lossless `toJSON()`. It now descends with the shared walk, which is also
+ * what makes that divergence impossible to reintroduce.
+ *
+ * **Lazy clone**: when nothing matches, the original comes back by identity
+ * and nothing is allocated.
+ *
+ * @param target - the record to sweep; `undefined` passes through unchanged.
+ * @param plan - depth-bounded plan to walk with. Defaults to the shared one.
+ * @returns either `target` itself or a fresh record with the safe forms.
+ *
+ * @example
+ * ```ts
+ * domainSafeDeep({ ctx: { user }, event: orderConfirmed });
+ * // → { ctx: { user: { …, password: "[redacted]" } },
+ * //     "event.name": "order.confirmed",
+ * //     "event.aggregateId": "01J…",
+ * //     "event.occurredAt": "2026-08-25T13:04:11.000Z" }
+ * ```
+ *
+ * @typeParam T - shape of the input record; the return type preserves it.
+ *
+ * @see {@link createDomainProcessor} — the pipeline stage that applies this.
+ *
+ * @internal
+ */
+export function domainSafeDeep<T extends Record<string, unknown> | undefined>(
+	target: T,
+	plan: WalkPlan = DOMAIN_PLAN,
+): T {
+	return walkRecord(target, plan);
 }
 
 /**
@@ -181,149 +271,25 @@ function fromValueObject(value: object, key: string): unknown {
 }
 
 /**
- * Convert an array item by item, returning the original by identity when no
- * item changed — the same lazy clone `redactShallow` uses, so an array of
- * plain values costs one pass and no allocation.
+ * The structural half of domain-event detection: `Entity.raiseEvent` accepts
+ * any `{ name, ...payload }` object and the buffer stores plain objects — the
+ * `beans` TSDoc is explicit that `.on()` matches by `name` and never by
+ * `instanceof`.
  */
-function fromArray(values: unknown[], key: string, depth: number): unknown[] {
-	if (depth >= MAX_DEPTH) {
-		return values;
-	}
-
-	let next: unknown[] | undefined;
-
-	for (let index = 0; index < values.length; index++) {
-		const item = values[index];
-		const safe = convert(item, key, depth + 1);
-
-		if (safe !== item) {
-			next ??= [...values];
-			next[index] = safe;
-		}
-	}
-
-	return next ?? values;
+function hasEventShape(value: object): value is IDomainEvent {
+	const candidate = value as Partial<IDomainEvent>;
+	return (
+		typeof candidate.name === "string" &&
+		typeof candidate.occurredAt === "string" &&
+		typeof candidate.aggregateId === "string"
+	);
 }
 
 /**
- * Convert a `Map` to a plain object, converting each value.
- *
- * Unlike an array this is **not** lazy, because identity is not a safe
- * default here: `JSON.stringify(new Map(...))` is `{}`, so returning the Map
- * untouched does not preserve the log line, it erases it. Converting always
- * is the only outcome that keeps the entry readable, and a `Map` in a log
- * payload is rare enough that the allocation is not a hot path.
- */
-function fromMap(
-	values: Map<unknown, unknown>,
-	depth: number,
-): Record<string, unknown> | Map<unknown, unknown> {
-	if (depth >= MAX_DEPTH) {
-		return values;
-	}
-
-	const next: Record<string, unknown> = {};
-	for (const [entryKey, entryValue] of values) {
-		next[String(entryKey)] = convert(entryValue, String(entryKey), depth + 1);
-	}
-	return next;
-}
-
-/** Convert a `Set` to an array. `JSON.stringify(new Set(…))` is `{}`, so — as with {@link fromMap} — identity would lose the entry. */
-function fromSet(
-	values: Set<unknown>,
-	key: string,
-	depth: number,
-): unknown[] | Set<unknown> {
-	if (depth >= MAX_DEPTH) {
-		return values;
-	}
-
-	return [...values].map((item) => convert(item, key, depth + 1));
-}
-
-/**
- * Sweep the **top level** of a `bindings` / `meta` record, replacing every
- * domain object with its safe form and flattening domain events into
- * prefixed top-level keys.
- *
- * **Lazy clone**, mirroring `redactShallow`: when nothing matches, the
- * original object comes back by identity and nothing is allocated — the cost
- * on a log line that carries no domain object is one `typeof` per key.
- *
- * Depth is deliberately one level, matching the shallow scope of redaction:
- * a domain object nested inside a plain literal (`{ ctx: { user } }`) is not
- * reached. Recursion *inside* a domain object is `toSafeJSON`'s job, and it
- * already does it.
- *
- * @param target - the record to sweep; `undefined` passes through unchanged.
- * @returns either `target` itself or a fresh record with the safe forms.
- *
- * @example
- * ```ts
- * domainSafeShallow({ user, event: orderConfirmed });
- * // → { user: { …, password: "[redacted]" },
- * //     "event.name": "order.confirmed",
- * //     "event.aggregateId": "01J…",
- * //     "event.occurredAt": "2026-08-25T13:04:11.000Z" }
- * ```
- *
- * @typeParam T - shape of the input record; the return type preserves it.
- *
- * @see {@link createDomainProcessor} — the pipeline stage that applies this.
- *
- * @internal
- */
-export function domainSafeShallow<
-	T extends Record<string, unknown> | undefined,
->(target: T): T {
-	if (!target) {
-		return target;
-	}
-
-	let next: Record<string, unknown> | undefined;
-
-	for (const key of Object.keys(target)) {
-		const value = target[key];
-
-		if (typeof value !== "object" || value === null) {
-			continue;
-		}
-
-		const safe = domainSafeValue(value, key);
-		if (safe === value) {
-			continue;
-		}
-
-		next ??= { ...target };
-
-		// A domain event is the one conversion that changes the *shape* of the
-		// record: it becomes sibling `key.*` fields instead of a nested object.
-		if (isDomainEvent(value)) {
-			delete next[key];
-			for (const field of Object.keys(safe as Record<string, unknown>)) {
-				next[`${key}.${field}`] = (safe as Record<string, unknown>)[field];
-			}
-			continue;
-		}
-
-		next[key] = safe;
-	}
-
-	return (next ?? target) as T;
-}
-
-/**
- * Whether `value` is a domain event. `instanceof DomainEvent` catches
- * subclasses of the base; the structural check catches everything else,
- * because `Entity.raiseEvent` accepts any `{ name, ...payload }` object and
- * the buffer stores plain objects — the `beans` TSDoc is explicit that `.on()`
- * matches by `name` and never by `instanceof`.
- *
- * The named pillars are excluded outright, so the predicate holds on its own
- * rather than relying on being asked in the right order: an entity that
- * happens to own `name`, `occurredAt` and `aggregateId` properties is still
- * an entity.
+ * Whether `value` is a domain event, for a value that has a prototype of its
+ * own. The named pillars are excluded outright, so the predicate holds
+ * regardless of the order it is asked in: an entity that happens to own
+ * `name`, `occurredAt` and `aggregateId` properties is still an entity.
  */
 function isDomainEvent(value: object): value is IDomainEvent {
 	if (value instanceof DomainEvent) {
@@ -339,35 +305,56 @@ function isDomainEvent(value: object): value is IDomainEvent {
 		return false;
 	}
 
-	const candidate = value as Partial<IDomainEvent>;
-	return (
-		typeof candidate.name === "string" &&
-		typeof candidate.occurredAt === "string" &&
-		typeof candidate.aggregateId === "string"
-	);
+	return hasEventShape(value);
 }
+
+/**
+ * Events whose payload is being converted right now.
+ *
+ * `raiseEvent` resolves a payload from the event's `static payload`
+ * declaration, so in practice it is already plain — but an event assembled by
+ * hand can hold anything, including itself. Without this guard
+ * `event.payload === event` recurses until the stack goes, **inside the
+ * caller's `log.info()`**: a logger that crashes the request it was
+ * describing. The walk's own cycle guard does not cover it, because an event
+ * is claimed by the visitor and never descended into.
+ */
+const flattening = new WeakSet<object>();
+
+/** Substituted for an event that is its own payload, matching the walk's sentinel. */
+const CIRCULAR = "[Circular]";
 
 /**
  * The loggable fields of a domain event, as a plain object. `payload` is
  * omitted when absent — the base declares it with `declare readonly`, so a
- * genuinely payload-less event does not carry the key at all. Whatever
- * payload is there was already resolved by `raiseEvent` from the event's
- * `static payload` declaration; passing it back through
- * {@link domainSafeValue} only covers events built by hand, which can still
- * hold live instances.
+ * genuinely payload-less event does not carry the key at all.
+ *
+ * The payload is converted here rather than left to the walk, because a
+ * {@link SpreadFields} resolves to its fields untouched in every position but
+ * one; converting at the source is what keeps `{ rows: [event] }` as safe as
+ * `{ event }`.
  */
-function domainEventFields(
-	event: IDomainEvent,
-	depth: number,
-): Record<string, unknown> {
+function domainEventFields(event: IDomainEvent): Record<string, unknown> {
 	const fields: Record<string, unknown> = {
 		name: event.name,
 		aggregateId: event.aggregateId,
 		occurredAt: event.occurredAt,
 	};
 
-	if (event.payload !== undefined) {
-		fields.payload = convert(event.payload, "payload", depth);
+	if (event.payload === undefined) {
+		return fields;
+	}
+
+	if (flattening.has(event)) {
+		fields.payload = CIRCULAR;
+		return fields;
+	}
+
+	flattening.add(event);
+	try {
+		fields.payload = domainSafeValue(event.payload, "payload");
+	} finally {
+		flattening.delete(event);
 	}
 
 	return fields;

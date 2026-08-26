@@ -18,6 +18,8 @@ import type { Bindings } from "@/types/bindings";
  * }
  * ```
  *
+ * @since 0.0.1
+ *
  * @see {@link runWithContext}
  */
 export function getContext(): Bindings | undefined {

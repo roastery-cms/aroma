@@ -26,6 +26,8 @@ import type { LogLevel } from "@/types/log-level";
  * - `err`, when present, is the structured form produced by
  *   `serializeError` — never the raw `Error` instance.
  *
+ * @since 0.0.1
+ *
  * @see {@link Logger} — the only producer of events in this package.
  * @see {@link ITransport.write} — the consumer signature.
  * @see {@link serializeError} — how `err` is built from a thrown value.

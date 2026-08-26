@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { configureRedaction } from "@roastery/beans";
 import { redactDeep } from "@/internal/redact";
+import { MAX_WALK_DEPTH } from "@/internal/safe-walk";
 
 // `configureRedaction` is module state inside beans — restore the default so a
 // test that changes it cannot colour the ones that follow.
@@ -94,7 +95,12 @@ describe("redactDeep — depth", () => {
 	});
 
 	test("leaves a key beyond the bound alone, by design", () => {
-		const result = redactDeep(nested(8), ["password"], 6);
+		// Deliberately *not* truncated, unlike the domain walk. Masking is a
+		// heuristic over a payload the domain conversion has already made safe,
+		// so a subtree this walk did not reach is unmasked and nothing worse —
+		// exactly as it would be if the key were spelled differently. Deleting it
+		// would trade real data for no secrecy. See `WalkPlan.truncateWhenBounded`.
+		const result = redactDeep(nested(MAX_WALK_DEPTH + 2), ["password"], 6);
 
 		expect(deepest(result)).toBe("Sup3rS3cret!");
 	});
@@ -196,31 +202,85 @@ describe("redactDeep — traversal limits", () => {
 		expect((result.list as Record<string, unknown>[])[0]?.password).toBe(
 			"[redacted]",
 		);
-		expect((result.map as Map<string, unknown>).get("password")).toBe(
+		// A Map arrives as a plain object and a Set as an array — see the
+		// normalisation test below. The casts go through `unknown` because the
+		// generic return type claims the input shape is preserved, which it is
+		// not for these two.
+		expect((result.map as unknown as Record<string, unknown>).password).toBe(
 			"[redacted]",
 		);
-		expect([...(result.set as Set<Record<string, unknown>>)][0]?.password).toBe(
-			"[redacted]",
-		);
+		expect(
+			(result.set as unknown as Record<string, unknown>[])[0]?.password,
+		).toBe("[redacted]");
 	});
 
-	test("does not descend into a class instance", () => {
-		// A domain object was already converted by the domain processor, and
-		// anything else with a prototype is none of the logger's business.
+	test("normalises a Map to an object and a Set to an array", () => {
+		// Not a convenience — the walk is the last chance to make these
+		// readable. `JSON.stringify(new Map([["a", 1]]))` is `"{}"`, so handing
+		// the Map back by identity does not preserve the entry, it erases it,
+		// and any redaction just applied inside becomes invisible rather than
+		// absent. An array is lazy because it survives serialisation; these two
+		// do not, so they are always materialised.
+		const map = new Map<string, unknown>([["a", 1]]);
+		const set = new Set([1, 2]);
+
+		expect(JSON.stringify({ map, set })).toBe('{"map":{},"set":{}}');
+
+		const result = redactDeep({ map, set }, ["password"]);
+
+		expect(result.map as unknown).toEqual({ a: 1 });
+		expect(result.set as unknown).toEqual([1, 2]);
+		expect(JSON.stringify(result)).toBe('{"map":{"a":1},"set":[1,2]}');
+	});
+
+	test("descends into a class instance", () => {
+		// This test used to assert the opposite, and what it pinned was a
+		// limitation dressed as a contract: refusing every prototype also refused
+		// an ordinary class carrying an entity, which is how door 6 stayed open.
+		// A listed key inside a class instance is a secret like any other.
 		class Opaque {
-			public password = "untouched";
+			public password = "in-instance";
 		}
 		const instance = new Opaque();
 
 		const result = redactDeep({ instance }, ["password"]);
 
-		expect(result.instance).toBe(instance);
-		expect(instance.password).toBe("untouched");
+		expect(
+			(result.instance as unknown as Record<string, unknown>).password,
+		).toBe("[redacted]");
+		// The original is never mutated, whatever the copy says.
+		expect(instance.password).toBe("in-instance");
 	});
 
-	test("does not descend into a Date", () => {
+	test("reaches a Node-style request object, not just its literal form", () => {
+		// The shape that motivated deep masking in the first place. Until the
+		// walk entered class instances it only worked when the request had been
+		// spread into a literal — which is not how anyone logs a request.
+		class IncomingMessage {
+			public headers = { authorization: "Bearer abc", accept: "json" };
+		}
+
+		const result = redactDeep({ req: new IncomingMessage() }, [
+			"authorization",
+		]);
+
+		expect(JSON.stringify(result)).not.toContain("Bearer abc");
+		expect(JSON.stringify(result)).toContain("json");
+	});
+
+	test("leaves a Date alone — by having nothing to walk, not by a special case", () => {
+		// `Object.keys(new Date())` is empty, so the ordinary lazy clone returns
+		// it by identity. No rule in `descendable` mentions Date.
 		const when = new Date(0);
 
+		expect(Object.keys(when)).toHaveLength(0);
 		expect(redactDeep({ when }, ["password"]).when).toBe(when);
+	});
+
+	test("never walks binary, however many indices it would expose", () => {
+		const bytes = new Uint8Array(1024);
+
+		expect(Object.keys(bytes)).toHaveLength(1024);
+		expect(redactDeep({ bytes }, ["password"]).bytes).toBe(bytes);
 	});
 });

@@ -11,6 +11,8 @@ import type { ITransport } from "@/types/transport.interface";
  * (`pino-elasticsearch`, `pino-loki`, `pino-datadog`, …) without pulling
  * pino itself in as a dependency.
  *
+ * @since 0.0.1
+ *
  * @see {@link createPinoCompatTransport}
  */
 export type PinoCompatibleTransport = {
@@ -22,6 +24,8 @@ export type PinoCompatibleTransport = {
 
 /**
  * Options accepted by `createPinoCompatTransport`.
+ *
+ * @since 0.0.1
  *
  * @see {@link createPinoCompatTransport}
  */
@@ -60,6 +64,8 @@ export type PinoCompatOptions = {
  *   transports: [createPinoCompatTransport(elastic, { name: "elastic" })],
  * });
  * ```
+ *
+ * @since 0.0.1
  *
  * @see {@link ITransport}
  */
